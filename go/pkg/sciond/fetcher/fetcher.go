@@ -113,8 +113,6 @@ func (f *fetcher) GetPaths(ctx context.Context, req *sciond.PathReq,
 	switch {
 	case err == nil:
 		break
-	case errors.Is(err, segfetcher.ErrBadDst):
-		return &sciond.PathReply{ErrorCode: sciond.ErrorBadDstIA}, err
 	case errors.Is(err, segfetcher.ErrNoPaths):
 		return &sciond.PathReply{ErrorCode: sciond.ErrorNoPaths}, err
 	default:

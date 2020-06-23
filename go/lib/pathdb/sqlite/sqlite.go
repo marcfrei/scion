@@ -496,28 +496,38 @@ func (e *executor) buildQuery(params *query.Params) (string, []interface{}) {
 	if len(params.StartsAt) > 0 {
 		subQ := []string{}
 		for _, as := range params.StartsAt {
-			if as.A == 0 {
-				subQ = append(subQ, "(s.StartIsdID=?)")
-				args = append(args, as.I)
-			} else {
+			if as.I != 0 && as.A != 0 {
 				subQ = append(subQ, "(s.StartIsdID=? AND s.StartAsID=?)")
 				args = append(args, as.I, as.A)
+			} else if as.I != 0 {
+				subQ = append(subQ, "(s.StartIsdID=?)")
+				args = append(args, as.I)
+			} else if as.A != 0 {
+				subQ = append(subQ, "(s.StartAsID=?)")
+				args = append(args, as.A)
 			}
 		}
-		where = append(where, fmt.Sprintf("(%s)", strings.Join(subQ, " OR ")))
+		if len(subQ) > 0 {
+			where = append(where, fmt.Sprintf("(%s)", strings.Join(subQ, " OR ")))
+		}
 	}
 	if len(params.EndsAt) > 0 {
 		subQ := []string{}
 		for _, as := range params.EndsAt {
-			if as.A == 0 {
-				subQ = append(subQ, "(s.EndIsdID=?)")
-				args = append(args, as.I)
-			} else {
+			if as.I != 0 && as.A != 0 {
 				subQ = append(subQ, "(s.EndIsdID=? AND s.EndAsID=?)")
 				args = append(args, as.I, as.A)
+			} else if as.I != 0 {
+				subQ = append(subQ, "(s.EndIsdID=?)")
+				args = append(args, as.I)
+			} else if as.A != 0 {
+				subQ = append(subQ, "(s.EndAsID=?)")
+				args = append(args, as.A)
 			}
 		}
-		where = append(where, fmt.Sprintf("(%s)", strings.Join(subQ, " OR ")))
+		if len(subQ) > 0 {
+			where = append(where, fmt.Sprintf("(%s)", strings.Join(subQ, " OR ")))
+		}
 	}
 	if params.MinLastUpdate != nil {
 		where = append(where, "(s.LastUpdated>?)")

@@ -19,7 +19,6 @@ import (
 
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/infra/modules/segfetcher"
-	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/pkg/trust"
 )
 
@@ -52,9 +51,6 @@ func (s *Splitter) Split(ctx context.Context,
 }
 
 func (s *Splitter) isCore(ctx context.Context, ia addr.IA) (bool, error) {
-	if ia.IsZero() {
-		return false, serrors.WithCtx(segfetcher.ErrInvalidRequest, "reason", "empty ia")
-	}
 	if ia.IsWildcard() {
 		return true, nil
 	}
