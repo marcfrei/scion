@@ -36,6 +36,7 @@ const (
 	SB  = "SB"
 	RS  = "RS"
 	SIG = "SIG"
+	TS  = "TS"
 
 	CPService = "Control Plane Service"
 )

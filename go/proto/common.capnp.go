@@ -93,6 +93,7 @@ const (
 	ServiceType_br    ServiceType = 6
 	ServiceType_sig   ServiceType = 7
 	ServiceType_hps   ServiceType = 8
+	ServiceType_ts    ServiceType = 9
 )
 
 // String returns the enum's constant name.
@@ -116,6 +117,8 @@ func (c ServiceType) String() string {
 		return "sig"
 	case ServiceType_hps:
 		return "hps"
+	case ServiceType_ts:
+		return "ts"
 
 	default:
 		return ""
@@ -144,6 +147,8 @@ func ServiceTypeFromString(c string) ServiceType {
 		return ServiceType_sig
 	case "hps":
 		return ServiceType_hps
+	case "ts":
+		return ServiceType_ts
 
 	default:
 		return 0
