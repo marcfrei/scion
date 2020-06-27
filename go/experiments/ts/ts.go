@@ -12,8 +12,10 @@ import (
 	"github.com/scionproto/scion/go/lib/sciond"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/sock/reliable"
+	"github.com/scionproto/scion/go/lib/sock/reliable/reconnect"
 	"github.com/scionproto/scion/go/lib/spath"
 	"github.com/scionproto/scion/go/lib/topology"
+	"github.com/scionproto/scion/go/proto"
 )
 
 const (
@@ -38,8 +40,7 @@ func main() {
 	}
 	defer sciondConnector.Close(context.TODO())
 
-	dispatcher := reliable.NewDispatcher("")
- 	// TODO: wrap with reconnect.NewDispatcherService?
+	dispatcher := reconnect.NewDispatcherService(reliable.NewDispatcher(""))
 
 	packetDispatcher := &snet.DefaultPacketDispatcherService{
 		Dispatcher: dispatcher,
@@ -85,13 +86,28 @@ func main() {
 			coreASes[p.Destination()] = true
 		}
 
-		log.Printf("Reachable core ASes from %v:\n", localAddr.IA)
+		log.Printf("Reachable core ASes:\n")
 		for coreAS := range coreASes {
 			log.Printf("%v", coreAS)
 		}
-		log.Printf("Paths to reachable core ASes from %v:\n", localAddr.IA)
+		log.Printf("Paths to reachable core ASes:\n")
 		for _, p := range corePaths {
 			log.Printf("%v\n", p)
+		}
+
+		svcInfoReply, err := sciondConnector.SVCInfo(context.TODO(),
+			[]proto.ServiceType{proto.ServiceType_ts})
+		if err != nil {
+			log.Fatal("Failed to lookup local TS service info:", err)
+		}
+		localTSHosts := make(map[string]bool)
+		for _, i := range svcInfoReply.Entries[0].HostInfos {
+			localTSHosts[i.Host().IP().String()] = true
+		}
+
+		log.Printf("Reachable local time services:\n")
+		for localTSHost := range localTSHosts {
+			log.Printf("%v", localTSHost)
 		}
 
 		var selectedPath snet.Path
@@ -110,10 +126,13 @@ func main() {
 			path = selectedPath.Path()
 			nextHop = selectedPath.UnderlayNextHop()
 		} else {
-			path = nil
-			nextHop = &net.UDPAddr{
-				IP: localAddr.Host.IP,
-				Port: topology.EndhostPort,
+			for localTSHost := range localTSHosts {
+				path = nil
+				nextHop = &net.UDPAddr{
+					IP: net.ParseIP(localTSHost),
+					Port: topology.EndhostPort,
+				}
+				break
 			}
 		}
 
