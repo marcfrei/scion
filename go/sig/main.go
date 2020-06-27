@@ -26,10 +26,11 @@ import (
 	"os/user"
 	"sync/atomic"
 
-	"github.com/BurntSushi/toml"
+	toml "github.com/pelletier/go-toml"
 	"github.com/syndtr/gocapability/capability"
 
 	"github.com/scionproto/scion/go/lib/common"
+	libconfig "github.com/scionproto/scion/go/lib/config"
 	"github.com/scionproto/scion/go/lib/env"
 	"github.com/scionproto/scion/go/lib/fatal"
 	"github.com/scionproto/scion/go/lib/log"
@@ -37,12 +38,12 @@ import (
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/sigdisp"
 	"github.com/scionproto/scion/go/lib/sigjson"
+	"github.com/scionproto/scion/go/pkg/sig/sigconfig"
 	"github.com/scionproto/scion/go/sig/egress"
 	"github.com/scionproto/scion/go/sig/internal/base"
 	"github.com/scionproto/scion/go/sig/internal/ingress"
 	"github.com/scionproto/scion/go/sig/internal/metrics"
 	"github.com/scionproto/scion/go/sig/internal/sigcmn"
-	"github.com/scionproto/scion/go/sig/internal/sigconfig"
 	"github.com/scionproto/scion/go/sig/internal/xnet"
 )
 
@@ -120,12 +121,8 @@ func realMain() int {
 // setupBasic loads the config from file and initializes logging.
 func setupBasic() error {
 	// Load and initialize config.
-	md, err := toml.DecodeFile(env.ConfigFile(), &cfg)
-	if err != nil {
+	if err := libconfig.LoadFile(env.ConfigFile(), &cfg); err != nil {
 		return serrors.WrapStr("Failed to load config", err, "file", env.ConfigFile())
-	}
-	if len(md.Undecoded()) > 0 {
-		return serrors.New("Failed to load config: undecoded keys", "undecoded", md.Undecoded())
 	}
 	cfg.InitDefaults()
 	if err := log.Setup(cfg.Logging); err != nil {
@@ -217,6 +214,6 @@ func loadConfig(path string) bool {
 func configHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	var buf bytes.Buffer
-	toml.NewEncoder(&buf).Encode(cfg)
+	toml.NewEncoder(&buf).Order(toml.OrderPreserve).Encode(cfg)
 	fmt.Fprint(w, buf.String())
 }
