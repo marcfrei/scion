@@ -38,7 +38,7 @@ import (
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/sigdisp"
 	"github.com/scionproto/scion/go/lib/sigjson"
-	"github.com/scionproto/scion/go/pkg/sig/sigconfig"
+	sigconfig "github.com/scionproto/scion/go/pkg/sig/config"
 	"github.com/scionproto/scion/go/sig/egress"
 	"github.com/scionproto/scion/go/sig/internal/base"
 	"github.com/scionproto/scion/go/sig/internal/ingress"
@@ -83,7 +83,7 @@ func realMain() int {
 		log.Error("TUN device initialization failed", "err", err)
 		return 1
 	}
-	if err := sigcmn.Init(cfg.Sig, cfg.Sciond); err != nil {
+	if err := sigcmn.Init(cfg.Sig, cfg.Sciond, cfg.Features); err != nil {
 		log.Error("SIG common initialization failed", "err", err)
 		return 1
 	}
