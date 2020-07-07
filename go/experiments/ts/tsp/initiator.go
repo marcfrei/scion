@@ -51,8 +51,10 @@ func StartInitiator(c sciond.Connector, ctx context.Context) error {
 				log.Printf("[TSP initiator] Failed to lookup core paths: %v\n", err)
 			}
 			coreASes := make(map[addr.IA][]snet.Path)
-			for _, p := range corePaths {
-				coreASes[p.Destination()] = append(coreASes[p.Destination()], p)
+			if corePaths != nil {
+				for _, p := range corePaths {
+					coreASes[p.Destination()] = append(coreASes[p.Destination()], p)
+				}
 			}
 
 			log.Printf("[TSP initiator] Reachable core ASes:\n")
@@ -68,8 +70,10 @@ func StartInitiator(c sciond.Connector, ctx context.Context) error {
 				log.Printf("[TSP initiator] Failed to lookup local TS service info: %v\n", err)
 			}
 			localTSHosts := make(map[string]bool)
-			for _, i := range svcInfoReply.Entries[0].HostInfos {
-				localTSHosts[i.Host().IP().String()] = true
+			if svcInfoReply != nil {
+				for _, i := range svcInfoReply.Entries[0].HostInfos {
+					localTSHosts[i.Host().IP().String()] = true
+				}
 			}
 
 			log.Printf("Reachable local time services:\n")

@@ -75,6 +75,7 @@ func StartPropagator(s snet.PacketDispatcherService, ctx context.Context,
 	for i := 0; i < cap(propagators); i++ {
 		packetConn, localPort, err := s.Register(ctx, localIA, localHost, addr.SvcNone)
 		if err != nil {
+			// TODO: stop already started propagators
 			return err
 		}
 		p := newPropagator(i, packetConn, localIA, addr.HostFromIP(localHost.IP), localPort)
