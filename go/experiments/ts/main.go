@@ -48,9 +48,9 @@ func main() {
 		log.Fatal("Failed to start TSP propagator:", err)
 	}
 
-	err = tsp.StartInitiator(sciondConnector, ctx)
+	err = tsp.StartOriginator(sciondConnector, ctx)
 	if err != nil {
-		log.Fatal("Failed to start TSP initiator:", err)
+		log.Fatal("Failed to start TSP originator:", err)
 	}
 
 	select{}

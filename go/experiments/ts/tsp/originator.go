@@ -17,7 +17,7 @@ import (
 	"github.com/scionproto/scion/go/proto"
 )
 
-var initiatorLog = log.New(ioutil.Discard, "[tsp/initiator] ", log.LstdFlags)
+var originatorLog = log.New(ioutil.Discard, "[tsp/originator] ", log.LstdFlags)
 
 func newPacket(localIA addr.IA, remoteIA addr.IA, path snet.Path) *snet.Packet {
 	var dpPath *spath.Path
@@ -38,7 +38,7 @@ func newPacket(localIA addr.IA, remoteIA addr.IA, path snet.Path) *snet.Packet {
 	}
 }
 
-func StartInitiator(c sciond.Connector, ctx context.Context) error {
+func StartOriginator(c sciond.Connector, ctx context.Context) error {
 	localIA, err := c.LocalIA(ctx)
 	if err != nil {
 		return err
@@ -46,12 +46,12 @@ func StartInitiator(c sciond.Connector, ctx context.Context) error {
 
 	go func() {
 		for {
-			initiatorLog.Printf("Initiating TSP broadcast\n")
+			originatorLog.Printf("Initiating TSP broadcast\n")
 
 			corePaths, err := c.Paths(ctx,
 				addr.IA{I: 0, A: 0}, localIA, sciond.PathReqFlags{Refresh: true})
 			if err != nil {
-				initiatorLog.Printf("Failed to lookup core paths: %v\n", err)
+				originatorLog.Printf("Failed to lookup core paths: %v\n", err)
 			}
 			coreASes := make(map[addr.IA][]snet.Path)
 			if corePaths != nil {
@@ -60,17 +60,17 @@ func StartInitiator(c sciond.Connector, ctx context.Context) error {
 				}
 			}
 
-			initiatorLog.Printf("Reachable core ASes:\n")
+			originatorLog.Printf("Reachable core ASes:\n")
 			for coreAS := range coreASes {
-				initiatorLog.Printf("%v", coreAS)
+				originatorLog.Printf("%v", coreAS)
 				for _, p := range coreASes[coreAS] {
-					initiatorLog.Printf("\t%v\n", p)
+					originatorLog.Printf("\t%v\n", p)
 				}
 			}
 
 			svcInfoReply, err := c.SVCInfo(ctx, []proto.ServiceType{proto.ServiceType_ts})
 			if err != nil {
-				initiatorLog.Printf("Failed to lookup local TS service info: %v\n", err)
+				originatorLog.Printf("Failed to lookup local TS service info: %v\n", err)
 			}
 			localTSHosts := make(map[string]bool)
 			if svcInfoReply != nil {
@@ -79,9 +79,9 @@ func StartInitiator(c sciond.Connector, ctx context.Context) error {
 				}
 			}
 
-			initiatorLog.Printf("Reachable local time services:\n")
+			originatorLog.Printf("Reachable local time services:\n")
 			for localTSHost := range localTSHosts {
-				initiatorLog.Printf("%v", localTSHost)
+				originatorLog.Printf("%v", localTSHost)
 			}
 
 			for remoteIA := range coreASes {
