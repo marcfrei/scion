@@ -4,11 +4,14 @@ import (
 	"context"
 	"log"
 	"net"
+	"os"
 
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/snet"
 )
+
+var handlerLog = log.New(os.Stderr, "[tsp/handler] ", log.LstdFlags) 
 
 func StartHandler(s snet.PacketDispatcherService, ctx context.Context,
 	localIA addr.IA, localHost *net.UDPAddr) error {
@@ -17,7 +20,7 @@ func StartHandler(s snet.PacketDispatcherService, ctx context.Context,
 		return err
 	}
 
-	log.Printf("[TSP handler] Listening in %v on %v:%d - %v\n",
+	handlerLog.Printf("Listening in %v on %v:%d - %v\n",
 		localIA, localHost.IP, localPort, addr.SvcTS)
 
 	go func() {
@@ -26,11 +29,11 @@ func StartHandler(s snet.PacketDispatcherService, ctx context.Context,
 			var lastHop net.UDPAddr
 			err := packetConn.ReadFrom(&packet, &lastHop)
 			if err != nil {
-				log.Printf("[TSP handler] Failed to read packet: %v\n", err)
+				handlerLog.Printf("Failed to read packet: %v\n", err)
 				continue
 			}
 
-			log.Printf("[TSP handler] Received packet: %v\n", string(packet.Payload.(common.RawBytes)))
+			handlerLog.Printf("Received packet: %v\n", string(packet.Payload.(common.RawBytes)))
 		}
 	}()
 

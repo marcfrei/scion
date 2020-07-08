@@ -2,6 +2,7 @@ package tsp
 
 import (
 	"context"
+	"io/ioutil"
 	"log"
 	"math/rand"
 	"net"
@@ -15,6 +16,8 @@ import (
 	"github.com/scionproto/scion/go/lib/topology"
 	"github.com/scionproto/scion/go/proto"
 )
+
+var initiatorLog = log.New(ioutil.Discard, "[tsp/initiator] ", log.LstdFlags)
 
 func newPacket(localIA addr.IA, remoteIA addr.IA, path snet.Path) *snet.Packet {
 	var dpPath *spath.Path
@@ -43,12 +46,12 @@ func StartInitiator(c sciond.Connector, ctx context.Context) error {
 
 	go func() {
 		for {
-			log.Printf("[TSP initiator] Initiating TSP broadcast\n")
+			initiatorLog.Printf("Initiating TSP broadcast\n")
 
 			corePaths, err := c.Paths(ctx,
 				addr.IA{I: 0, A: 0}, localIA, sciond.PathReqFlags{Refresh: true})
 			if err != nil {
-				log.Printf("[TSP initiator] Failed to lookup core paths: %v\n", err)
+				initiatorLog.Printf("Failed to lookup core paths: %v\n", err)
 			}
 			coreASes := make(map[addr.IA][]snet.Path)
 			if corePaths != nil {
@@ -57,17 +60,17 @@ func StartInitiator(c sciond.Connector, ctx context.Context) error {
 				}
 			}
 
-			log.Printf("[TSP initiator] Reachable core ASes:\n")
+			initiatorLog.Printf("Reachable core ASes:\n")
 			for coreAS := range coreASes {
-				log.Printf("[TSP initiator] %v", coreAS)
+				initiatorLog.Printf("%v", coreAS)
 				for _, p := range coreASes[coreAS] {
-					log.Printf("[TSP initiator] \t%v\n", p)
+					initiatorLog.Printf("\t%v\n", p)
 				}
 			}
 
 			svcInfoReply, err := c.SVCInfo(ctx, []proto.ServiceType{proto.ServiceType_ts})
 			if err != nil {
-				log.Printf("[TSP initiator] Failed to lookup local TS service info: %v\n", err)
+				initiatorLog.Printf("Failed to lookup local TS service info: %v\n", err)
 			}
 			localTSHosts := make(map[string]bool)
 			if svcInfoReply != nil {
@@ -76,9 +79,9 @@ func StartInitiator(c sciond.Connector, ctx context.Context) error {
 				}
 			}
 
-			log.Printf("Reachable local time services:\n")
+			initiatorLog.Printf("Reachable local time services:\n")
 			for localTSHost := range localTSHosts {
-				log.Printf("[TSP initiator] %v", localTSHost)
+				initiatorLog.Printf("%v", localTSHost)
 			}
 
 			for remoteIA := range coreASes {

@@ -2,6 +2,7 @@ package tsp
 
 import (
 	"context"
+	"io/ioutil"
 	"log"
 	"net"
 
@@ -30,6 +31,8 @@ type propagator struct {
 }
 
 var (
+	propagatorLog = log.New(ioutil.Discard, "[tsp/propagator] ", log.LstdFlags)
+
 	localHost net.UDPAddr
 	propagators chan *propagator
 	propagateRequests chan propagateRequest
@@ -51,17 +54,17 @@ func (p *propagator) start() {
 	go func() {
 		for {
 			propagators <- p
-			log.Printf("[TSP propagator, %d] Awaiting requests\n", p.id)
+			propagatorLog.Printf("[%d] Awaiting requests\n", p.id)
 			select {
 			case r := <-p.propagateRequests:
-				log.Printf("[TSP propagator, %d] Received request %v: %v, %v\n", p.id, r, r.pkt, r.nextHop)
+				propagatorLog.Printf("[%d] Received request %v: %v, %v\n", p.id, r, r.pkt, r.nextHop)
 				r.pkt.Source = snet.SCIONAddress{IA: p.localIA, Host: p.localHost};
 				r.pkt.PacketInfo.L4Header = &l4.UDP{SrcPort: p.localPort};
 				err := p.packetConn.WriteTo(r.pkt, r.nextHop)
 				if err != nil {
-					log.Printf("[TSP propagator, %d] Failed to write packet: %v\n", p.id, err)
+					propagatorLog.Printf("[%d] Failed to write packet: %v\n", p.id, err)
 				}
-				log.Printf("[TSP propagator, %d] Handled request\n", p.id)
+				propagatorLog.Printf("[%d] Handled request\n", p.id)
 			}
 		}
 	}()
@@ -86,10 +89,10 @@ func StartPropagator(s snet.PacketDispatcherService, ctx context.Context,
 		for {
 			select {
 			case r := <-propagateRequests:
-				log.Printf("[TSP propagator] Received request %v\n", r)
+				propagatorLog.Printf("Received request %v\n", r)
 				p := <-propagators
 				p.propagateRequests <- r
-				log.Printf("[TSP propagator] Handled request %v\n", r)
+				propagatorLog.Printf("Handled request %v\n", r)
 			}
 		}
 	}()
