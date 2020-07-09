@@ -15,7 +15,7 @@ var handlerLog = log.New(os.Stderr, "[tsp/handler] ", log.LstdFlags)
 
 func StartHandler(s snet.PacketDispatcherService, ctx context.Context,
 	localIA addr.IA, localHost *net.UDPAddr) error {
-	packetConn, localPort, err := s.Register(ctx, localIA, localHost, addr.SvcTS)
+	conn, localPort, err := s.Register(ctx, localIA, localHost, addr.SvcTS)
 	if err != nil {
 		return err
 	}
@@ -27,13 +27,14 @@ func StartHandler(s snet.PacketDispatcherService, ctx context.Context,
 		for {
 			var packet snet.Packet
 			var lastHop net.UDPAddr
-			err := packetConn.ReadFrom(&packet, &lastHop)
+			err := conn.ReadFrom(&packet, &lastHop)
 			if err != nil {
 				handlerLog.Printf("Failed to read packet: %v\n", err)
 				continue
 			}
 
-			handlerLog.Printf("Received packet: %v\n", string(packet.Payload.(common.RawBytes)))
+			handlerLog.Printf("Received packet: %v\n", string(
+				packet.Payload.(common.RawBytes)))
 		}
 	}()
 

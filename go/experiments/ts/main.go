@@ -13,6 +13,21 @@ import (
 	"github.com/scionproto/scion/go/experiments/ts/tsp"
 )
 
+func newSciondConnector(addr string, ctx context.Context) sciond.Connector {
+	c, err := sciond.NewService(addr).Connect(ctx)
+	if err != nil {
+		log.Fatal("Failed to create SCION connector:", err)
+	}
+	return c
+}
+
+func newPacketDispatcher(c sciond.Connector) snet.PacketDispatcherService {
+	return &snet.DefaultPacketDispatcherService{
+		Dispatcher: reconnect.NewDispatcherService(reliable.NewDispatcher("")),
+		SCMPHandler: snet.NewSCMPHandler(sciond.RevHandler{Connector: c}),
+	}
+}
+
 func main() {
 	var sciondAddr string
 	var localAddr snet.UDPAddr
@@ -20,35 +35,25 @@ func main() {
 	flag.Var(&localAddr, "local", "Local address")
 	flag.Parse()
 
-	sciondConnector, err := sciond.NewService(sciondAddr).Connect(context.TODO())
-	if err != nil {
-		log.Fatal("Failed to create SCION connector:", err)
-	}
-	defer sciondConnector.Close(context.TODO())
+	ctx := context.Background()
+	var err error
 
-	dispatcher := reconnect.NewDispatcherService(reliable.NewDispatcher(""))
-
-	packetDispatcher := &snet.DefaultPacketDispatcherService{
-		Dispatcher: dispatcher,
-		SCMPHandler: snet.NewSCMPHandler(
-			sciond.RevHandler{Connector: sciondConnector},
-		),
-	}
-
-	ctx := context.TODO()
-
-	err = tsp.StartHandler(packetDispatcher, ctx, localAddr.IA, localAddr.Host)
+	err = tsp.StartHandler(
+		newPacketDispatcher(newSciondConnector(sciondAddr, ctx)), ctx,
+		localAddr.IA, localAddr.Host)
 	if err != nil {
 		log.Fatal("Failed to start TSP handler:", err)
 	}
 
 	localAddr.Host.Port = 0
-	err = tsp.StartPropagator(packetDispatcher, ctx, localAddr.IA, localAddr.Host)
+	err = tsp.StartPropagator(
+		newPacketDispatcher(newSciondConnector(sciondAddr, ctx)), ctx,
+		localAddr.IA, localAddr.Host)
 	if err != nil {
 		log.Fatal("Failed to start TSP propagator:", err)
 	}
 
-	err = tsp.StartOriginator(sciondConnector, ctx)
+	err = tsp.StartOriginator(newSciondConnector(sciondAddr, ctx), ctx)
 	if err != nil {
 		log.Fatal("Failed to start TSP originator:", err)
 	}

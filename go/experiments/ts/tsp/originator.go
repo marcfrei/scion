@@ -68,7 +68,8 @@ func StartOriginator(c sciond.Connector, ctx context.Context) error {
 				}
 			}
 
-			svcInfoReply, err := c.SVCInfo(ctx, []proto.ServiceType{proto.ServiceType_ts})
+			svcInfoReply, err := c.SVCInfo(ctx,
+				[]proto.ServiceType{proto.ServiceType_ts})
 			if err != nil {
 				originatorLog.Printf("Failed to lookup local TS service info: %v\n", err)
 			}
