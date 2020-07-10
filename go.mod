@@ -2,6 +2,7 @@ module github.com/scionproto/scion
 
 require (
 	github.com/antlr/antlr4 v0.0.0-20181218183524-be58ebffde8e
+	github.com/beevik/ntp v0.3.0
 	github.com/buildkite/go-buildkite v2.2.1-0.20190413010238-568b6651b687+incompatible
 	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
 	github.com/codahale/hdrhistogram v0.0.0-20161010025455-3a0bb77429bd // indirect

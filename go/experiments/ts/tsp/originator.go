@@ -82,7 +82,7 @@ func StartOriginator(c sciond.Connector, ctx context.Context) error {
 
 			originatorLog.Printf("Reachable local time services:\n")
 			for localTSHost := range localTSHosts {
-				originatorLog.Printf("%v", localTSHost)
+				originatorLog.Printf("\t%v\n", localTSHost)
 			}
 
 			for remoteIA := range coreASes {

@@ -4,12 +4,15 @@ import (
 	"context"
 	"flag"
 	"log"
+	"math/rand"
+	"time"
 
 	"github.com/scionproto/scion/go/lib/sciond"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/sock/reliable"
 	"github.com/scionproto/scion/go/lib/sock/reliable/reconnect"
 
+	"github.com/scionproto/scion/go/experiments/ts/ets"
 	"github.com/scionproto/scion/go/experiments/ts/tsp"
 )
 
@@ -58,5 +61,18 @@ func main() {
 		log.Fatal("Failed to start TSP originator:", err)
 	}
 
-	select{}
+	ntpHosts := []string{"time.apple.com", "time.facebook.com", "time.google.com",
+		"0.pool.ntp.org", "1.pool.ntp.org", "2.pool.ntp.org", "3.pool.ntp.org"} 
+
+	for {
+		for _, ntpHost := range ntpHosts {
+			err = ets.GetNTPTime(ntpHost);
+			if err != nil {
+				log.Printf("Failed to get NTP time: %v\n", err)
+			}
+		}
+
+		time.Sleep(30 * time.Second +
+			time.Duration(rand.Int63n(250)) * time.Millisecond)
+	}
 }
