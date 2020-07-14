@@ -5,23 +5,31 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/snet"
 )
 
+type SyncInfo struct {
+	Source snet.SCIONAddress
+	ClockOffset time.Duration
+}
+
 var handlerLog = log.New(os.Stderr, "[tsp/handler] ", log.LstdFlags) 
 
 func StartHandler(s snet.PacketDispatcherService, ctx context.Context,
-	localIA addr.IA, localHost *net.UDPAddr) error {
+	localIA addr.IA, localHost *net.UDPAddr) (<-chan SyncInfo, error) {
 	conn, localPort, err := s.Register(ctx, localIA, localHost, addr.SvcTS)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	handlerLog.Printf("Listening in %v on %v:%d - %v\n",
 		localIA, localHost.IP, localPort, addr.SvcTS)
+
+	syncInfos := make(chan SyncInfo)
 
 	go func() {
 		for {
@@ -33,10 +41,19 @@ func StartHandler(s snet.PacketDispatcherService, ctx context.Context,
 				continue
 			}
 
-			handlerLog.Printf("Received packet: %v\n", string(
-				packet.Payload.(common.RawBytes)))
+			clockOffset, err := time.ParseDuration(
+				string(packet.Payload.(common.RawBytes)))
+			if err != nil {
+				handlerLog.Printf("Failed to decode packet: %v\n", err)
+				continue
+			}
+
+			syncInfos <- SyncInfo{
+				Source: packet.Source,
+				ClockOffset: clockOffset,
+			}
 		}
 	}()
 
-	return nil
+	return syncInfos, nil
 }

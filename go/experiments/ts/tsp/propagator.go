@@ -100,7 +100,7 @@ func StartPropagator(s snet.PacketDispatcherService, ctx context.Context,
 	return nil
 }
 
-func propagatePacketTo(pkt *snet.Packet, nextHop *net.UDPAddr) {
+func PropagatePacketTo(pkt *snet.Packet, nextHop *net.UDPAddr) {
 	propagateRequests <- propagateRequest{pkt, nextHop}
 }
 

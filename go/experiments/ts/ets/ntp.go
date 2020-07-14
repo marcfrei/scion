@@ -1,27 +1,27 @@
 package ets;
 
 import (
+	"io/ioutil"
 	"log"
-	"os"
 	"time"
 
 	"github.com/beevik/ntp"
 )
 
-var ntpLog = log.New(os.Stderr, "[ets/ntp] ", log.LstdFlags) 
+var ntpLog = log.New(ioutil.Discard, "[ets/ntp] ", log.LstdFlags) 
 
-func GetNTPTime(host string) error {
+func GetNTPClockOffset(host string) (time.Duration, error) {
 
 	ntpLog.Printf("[%s] ----------------------", host)
 	ntpLog.Printf("[%s] NTP protocol version %d", host, 4)
 
 	r, err := ntp.Query(host)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	err = r.Validate();
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	ntpLog.Printf("[%s]  LocalTime: %v\n", host, time.Now())
@@ -40,5 +40,5 @@ func GetNTPTime(host string) error {
 	ntpLog.Printf("[%s]       Leap: %v\n", host, r.Leap)
 	ntpLog.Printf("[%s]   KissCode: \"%v\"\n", host, r.KissCode)
 
-	return nil
+	return r.ClockOffset, nil
 }
