@@ -62,7 +62,7 @@ func main() {
 	}
 
 	ntpHosts := []string{"time.apple.com", "time.facebook.com", "time.google.com",
-		"0.pool.ntp.org", "1.pool.ntp.org", "2.pool.ntp.org", "3.pool.ntp.org"} 
+		"0.pool.ntp.org", "1.pool.ntp.org", "2.pool.ntp.org", "3.pool.ntp.org"}
 
 	for {
 		for _, ntpHost := range ntpHosts {
