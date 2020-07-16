@@ -22,6 +22,22 @@ import (
 	"github.com/scionproto/scion/go/experiments/ts/tsp"
 )
 
+const (
+	flagBroadcast = 0
+	flagUpdate = 1
+)
+
+type syncInfoEntry struct {
+	syncInfo tsp.SyncInfo
+	stamp time.Time
+}
+
+type syncEntry struct {
+	ia addr.IA
+	clockOffset time.Duration
+	syncInfoEntries []syncInfoEntry
+}
+
 func newSciondConnector(addr string, ctx context.Context) sciond.Connector {
 	c, err := sciond.NewService(addr).Connect(ctx)
 	if err != nil {
@@ -57,6 +73,15 @@ func newPacket(localIA addr.IA, remoteIA addr.IA, path snet.Path,
 	}
 }
 
+func syncEntryForIA(syncEntries []syncEntry, ia addr.IA) *syncEntry {
+	for i, x := range syncEntries {
+		if x.ia == ia {
+			return &syncEntries[i]
+		}
+	}
+	return nil
+}
+
 func main() {
 	var sciondAddr string
 	var localAddr snet.UDPAddr
@@ -88,10 +113,13 @@ func main() {
 		log.Fatal("Failed to start TSP propagator:", err)
 	}
 
-	ticker := time.NewTicker(30 * time.Second)
-
 	ntpHosts := []string{"time.apple.com", "time.facebook.com", "time.google.com",
 		"0.pool.ntp.org", "1.pool.ntp.org", "2.pool.ntp.org", "3.pool.ntp.org"}
+
+	syncEntries := []syncEntry{}
+
+	timer := time.NewTimer(25 * time.Second)
+	flag := flagBroadcast
 
 	for {
 		select {
@@ -99,44 +127,100 @@ func main() {
 			log.Printf("Received new path info.\n")
 		case syncInfo := <-syncInfos:
 			log.Printf("Received new sync info: %v\n", syncInfo)
-		case <-ticker.C:
-			log.Printf("Received new timer tick.\n")
-
-			var clockOffsets []time.Duration
-			for _, ntpHost := range ntpHosts {
-				off, err := ets.GetNTPClockOffset(ntpHost);
-				if err != nil {
-					log.Printf("Failed to get NTP clock offset: %v\n", err)
-				}
-				clockOffsets = append(clockOffsets, off)
+			se := syncEntryForIA(syncEntries, syncInfo.Source.IA)
+			if se == nil {
+				syncEntries = append(syncEntries, syncEntry{
+					ia: syncInfo.Source.IA,
+					syncInfoEntries: []syncInfoEntry{},
+				})
+				se = &syncEntries[len(syncEntries) - 1]
 			}
-			sort.Slice(clockOffsets, func(i, j int) bool {
-				return clockOffsets[i] < clockOffsets[j]
-			})
+			var sie *syncInfoEntry
+			for i, x := range se.syncInfoEntries {
+				if syncInfo.Source.Host.Equal(x.syncInfo.Source.Host) {
+					sie = &se.syncInfoEntries[i]
+					sie.syncInfo = syncInfo
+					sie.stamp = time.Now()
+					break
+				}
+			}
+			if sie == nil {
+				se.syncInfoEntries = append(se.syncInfoEntries, syncInfoEntry{
+					syncInfo: syncInfo,
+					stamp: time.Now(),
+				})
+			}
+		case <-timer.C:
+			switch flag {
+			case flagBroadcast:
+				log.Printf("BROADCAST\n")
 
-			var clockOffset time.Duration
-			if len(clockOffsets) == 0 {
-				clockOffset = 0
-			} else {
-				i := len(clockOffsets) / 2
-				if len(clockOffsets) % 2 != 0 {
-					clockOffset = clockOffsets[i]
+				var clockOffsets []time.Duration
+				for _, ntpHost := range ntpHosts {
+					off, err := ets.GetNTPClockOffset(ntpHost);
+					if err != nil {
+						log.Printf("Failed to get NTP clock offset: %v\n", err)
+					}
+					clockOffsets = append(clockOffsets, off)
+				}
+				sort.Slice(clockOffsets, func(i, j int) bool {
+					return clockOffsets[i] < clockOffsets[j]
+				})
+
+				var clockOffset time.Duration
+				if len(clockOffsets) == 0 {
+					clockOffset = 0
 				} else {
-					clockOffset = (clockOffsets[i] + clockOffsets[i - 1]) / 2
+					i := len(clockOffsets) / 2
+					if len(clockOffsets) % 2 != 0 {
+						clockOffset = clockOffsets[i]
+					} else {
+						clockOffset = (clockOffsets[i] + clockOffsets[i - 1]) / 2
+					}
 				}
-			}
-			log.Printf("Median NTP clock offset %v\n", clockOffset)
 
-			for remoteIA, ps := range pathInfo.CoreASes {
-				sp := ps[rand.Intn(len(ps))]
-				tsp.PropagatePacketTo(
-					newPacket(pathInfo.LocalIA, remoteIA, sp, clockOffset),
-					sp.UnderlayNextHop())
-			}
-			for _, ip := range pathInfo.LocalTSHosts {
-				tsp.PropagatePacketTo(
-					newPacket(pathInfo.LocalIA, pathInfo.LocalIA, /* path: */ nil, clockOffset),
-					&net.UDPAddr{IP: ip, Port: topology.EndhostPort})
+				for remoteIA, ps := range pathInfo.CoreASes {
+					if syncEntryForIA(syncEntries, remoteIA) == nil {
+						syncEntries = append(syncEntries, syncEntry{
+							ia: remoteIA,
+							clockOffset: clockOffset,
+							syncInfoEntries: []syncInfoEntry{},
+						})
+					}
+					sp := ps[rand.Intn(len(ps))]
+					tsp.PropagatePacketTo(
+						newPacket(pathInfo.LocalIA, remoteIA, sp, clockOffset),
+						sp.UnderlayNextHop())
+				}
+				if syncEntryForIA(syncEntries, pathInfo.LocalIA) == nil {
+					syncEntries = append(syncEntries, syncEntry{
+						ia: pathInfo.LocalIA,
+						clockOffset: clockOffset,
+						syncInfoEntries: []syncInfoEntry{},
+					})
+				}
+				for _, ip := range pathInfo.LocalTSHosts {
+					tsp.PropagatePacketTo(
+						newPacket(pathInfo.LocalIA, pathInfo.LocalIA, /* path: */ nil, clockOffset),
+						&net.UDPAddr{IP: ip, Port: topology.EndhostPort})
+				}
+
+				flag = flagUpdate
+				timer.Reset(5 * time.Second)
+			case flagUpdate:
+				log.Printf("UPDATE\n")
+
+				for _, se := range syncEntries {
+					log.Printf("\t%v:\n", se.ia)
+					for _, sie := range se.syncInfoEntries {
+						log.Printf("\t\t%v\n", sie)
+					}
+				}
+
+				syncEntries = []syncEntry{}
+
+				flag = flagBroadcast
+				timer.Reset(25 * time.Second)
 			}
 		}
 	}
