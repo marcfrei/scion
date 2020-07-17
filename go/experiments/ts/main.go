@@ -23,19 +23,27 @@ import (
 )
 
 const (
-	flagBroadcast = 0
-	flagUpdate = 1
-)
+	flagStartRound = 0
+	flagBroadcast = 1
+	flagUpdate = 2
 
-type syncInfoEntry struct {
-	syncInfo tsp.SyncInfo
-	stamp time.Time
-}
+	roundPeriod = 30 * time.Second
+	roundDuration = 20 * time.Second
+)
 
 type syncEntry struct {
 	ia addr.IA
-	clockOffset time.Duration
-	syncInfoEntries []syncInfoEntry
+	syncInfos []tsp.SyncInfo
+}
+
+var ntpHosts = []string{
+	"time.apple.com",
+	"time.facebook.com",
+	"time.google.com",
+	// "0.pool.ntp.org",
+	// "1.pool.ntp.org",
+	// "2.pool.ntp.org",
+	// "3.pool.ntp.org",
 }
 
 func newSciondConnector(addr string, ctx context.Context) sciond.Connector {
@@ -73,10 +81,47 @@ func newPacket(localIA addr.IA, remoteIA addr.IA, path snet.Path,
 	}
 }
 
+func ntpClockOffset() time.Duration {
+	var clockOffsets []time.Duration
+	for _, ntpHost := range ntpHosts {
+		off, err := ets.GetNTPClockOffset(ntpHost);
+		if err != nil {
+			log.Printf("Failed to get NTP clock offset: %v\n", err)
+		}
+		clockOffsets = append(clockOffsets, off)
+	}
+	sort.Slice(clockOffsets, func(i, j int) bool {
+		return clockOffsets[i] < clockOffsets[j]
+	})
+
+	var clockOffset time.Duration
+	if len(clockOffsets) == 0 {
+		clockOffset = 0
+	} else {
+		i := len(clockOffsets) / 2
+		if len(clockOffsets) % 2 != 0 {
+			clockOffset = clockOffsets[i]
+		} else {
+			clockOffset = (clockOffsets[i] + clockOffsets[i - 1]) / 2
+		}
+	}
+
+	return clockOffset
+}
+
 func syncEntryForIA(syncEntries []syncEntry, ia addr.IA) *syncEntry {
 	for i, x := range syncEntries {
 		if x.ia == ia {
 			return &syncEntries[i]
+		}
+	}
+	return nil
+}
+
+func syncInfoForHost(syncInfos []tsp.SyncInfo, host addr.HostAddr) *tsp.SyncInfo {
+	for i, x := range syncInfos {
+		if x.Source.Host.Equal(host) {
+			return &syncInfos[i]
 		}
 	}
 	return nil
@@ -113,13 +158,15 @@ func main() {
 		log.Fatal("Failed to start TSP propagator:", err)
 	}
 
-	ntpHosts := []string{"time.apple.com", "time.facebook.com", "time.google.com",
-		"0.pool.ntp.org", "1.pool.ntp.org", "2.pool.ntp.org", "3.pool.ntp.org"}
+	var syncEntries []syncEntry
 
-	syncEntries := []syncEntry{}
+	flag := flagStartRound
+	now := time.Now().UTC()
+	syncTime := now.Add(roundPeriod).Truncate(roundPeriod)
+	log.Printf("Next sync time: %v\n", syncTime)
+	timer := time.NewTimer(syncTime.Add(-(roundDuration / 2)).Sub(now))
 
-	timer := time.NewTimer(25 * time.Second)
-	flag := flagBroadcast
+	var clockOffset time.Duration
 
 	for {
 		select {
@@ -131,60 +178,35 @@ func main() {
 			if se == nil {
 				syncEntries = append(syncEntries, syncEntry{
 					ia: syncInfo.Source.IA,
-					syncInfoEntries: []syncInfoEntry{},
 				})
 				se = &syncEntries[len(syncEntries) - 1]
 			}
-			var sie *syncInfoEntry
-			for i, x := range se.syncInfoEntries {
-				if syncInfo.Source.Host.Equal(x.syncInfo.Source.Host) {
-					sie = &se.syncInfoEntries[i]
-					sie.syncInfo = syncInfo
-					sie.stamp = time.Now()
-					break
-				}
+			si := syncInfoForHost(se.syncInfos, syncInfo.Source.Host)
+			if si != nil {
+				*si = syncInfo
+			} else {
+				se.syncInfos = append(se.syncInfos, syncInfo)
 			}
-			if sie == nil {
-				se.syncInfoEntries = append(se.syncInfoEntries, syncInfoEntry{
-					syncInfo: syncInfo,
-					stamp: time.Now(),
-				})
-			}
-		case <-timer.C:
+		case now = <-timer.C:
+			log.Printf("Received new timer signal: %v\n", now.UTC())
 			switch flag {
+			case flagStartRound:
+				log.Printf("START ROUND\n")
+
+				syncEntries = nil
+
+				flag = flagBroadcast
+				now = time.Now().UTC()
+				timer.Reset(syncTime.Sub(now))
 			case flagBroadcast:
 				log.Printf("BROADCAST\n")
 
-				var clockOffsets []time.Duration
-				for _, ntpHost := range ntpHosts {
-					off, err := ets.GetNTPClockOffset(ntpHost);
-					if err != nil {
-						log.Printf("Failed to get NTP clock offset: %v\n", err)
-					}
-					clockOffsets = append(clockOffsets, off)
-				}
-				sort.Slice(clockOffsets, func(i, j int) bool {
-					return clockOffsets[i] < clockOffsets[j]
-				})
-
-				var clockOffset time.Duration
-				if len(clockOffsets) == 0 {
-					clockOffset = 0
-				} else {
-					i := len(clockOffsets) / 2
-					if len(clockOffsets) % 2 != 0 {
-						clockOffset = clockOffsets[i]
-					} else {
-						clockOffset = (clockOffsets[i] + clockOffsets[i - 1]) / 2
-					}
-				}
+				clockOffset = ntpClockOffset()
 
 				for remoteIA, ps := range pathInfo.CoreASes {
 					if syncEntryForIA(syncEntries, remoteIA) == nil {
 						syncEntries = append(syncEntries, syncEntry{
 							ia: remoteIA,
-							clockOffset: clockOffset,
-							syncInfoEntries: []syncInfoEntry{},
 						})
 					}
 					sp := ps[rand.Intn(len(ps))]
@@ -195,8 +217,6 @@ func main() {
 				if syncEntryForIA(syncEntries, pathInfo.LocalIA) == nil {
 					syncEntries = append(syncEntries, syncEntry{
 						ia: pathInfo.LocalIA,
-						clockOffset: clockOffset,
-						syncInfoEntries: []syncInfoEntry{},
 					})
 				}
 				for _, ip := range pathInfo.LocalTSHosts {
@@ -206,21 +226,23 @@ func main() {
 				}
 
 				flag = flagUpdate
-				timer.Reset(5 * time.Second)
+				now = time.Now().UTC()
+				timer.Reset(syncTime.Add(roundDuration / 2).Sub(now))
 			case flagUpdate:
 				log.Printf("UPDATE\n")
 
 				for _, se := range syncEntries {
 					log.Printf("\t%v:\n", se.ia)
-					for _, sie := range se.syncInfoEntries {
+					for _, sie := range se.syncInfos {
 						log.Printf("\t\t%v\n", sie)
 					}
 				}
 
-				syncEntries = []syncEntry{}
-
-				flag = flagBroadcast
-				timer.Reset(25 * time.Second)
+				flag = flagStartRound
+				now = time.Now().UTC()
+				syncTime = now.Add(roundPeriod).Truncate(roundPeriod)
+				log.Printf("Next sync time: %v\n", syncTime)
+				timer.Reset(syncTime.Add(-(roundDuration / 2)).Sub(now))
 			}
 		}
 	}
