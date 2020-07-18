@@ -15,7 +15,7 @@ func GetNTPClockOffset(host string) (time.Duration, error) {
 	ntpLog.Printf("[%s] ----------------------", host)
 	ntpLog.Printf("[%s] NTP protocol version %d", host, 4)
 
-	r, err := ntp.Query(host)
+	r, err := ntp.QueryWithOptions(host, ntp.QueryOptions{Timeout: 3 * time.Second})
 	if err != nil {
 		return 0, err
 	}

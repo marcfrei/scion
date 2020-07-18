@@ -13,10 +13,10 @@ import (
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/sciond"
 	"github.com/scionproto/scion/go/lib/snet"
-	"github.com/scionproto/scion/go/lib/spath"
-	"github.com/scionproto/scion/go/lib/topology"
 	"github.com/scionproto/scion/go/lib/sock/reliable"
 	"github.com/scionproto/scion/go/lib/sock/reliable/reconnect"
+	"github.com/scionproto/scion/go/lib/spath"
+	"github.com/scionproto/scion/go/lib/topology"
 
 	"github.com/scionproto/scion/go/experiments/ts/ets"
 	"github.com/scionproto/scion/go/experiments/ts/tsp"
@@ -28,7 +28,7 @@ const (
 	flagUpdate = 2
 
 	roundPeriod = 30 * time.Second
-	roundDuration = 20 * time.Second
+	roundDuration = 10 * time.Second
 )
 
 type syncEntry struct {
@@ -40,10 +40,10 @@ var ntpHosts = []string{
 	"time.apple.com",
 	"time.facebook.com",
 	"time.google.com",
-	// "0.pool.ntp.org",
-	// "1.pool.ntp.org",
-	// "2.pool.ntp.org",
-	// "3.pool.ntp.org",
+	"0.pool.ntp.org",
+	"1.pool.ntp.org",
+	"2.pool.ntp.org",
+	"3.pool.ntp.org",
 }
 
 func newSciondConnector(addr string, ctx context.Context) sciond.Connector {
@@ -81,32 +81,57 @@ func newPacket(localIA addr.IA, remoteIA addr.IA, path snet.Path,
 	}
 }
 
+func medianTimeDuration(ds []time.Duration) time.Duration {
+	sort.Slice(ds, func(i, j int) bool {
+		return ds[i] < ds[j]
+	})
+	var m time.Duration
+	n := len(ds)
+	if n == 0 {
+		m = 0
+	} else {
+		i := n / 2
+		if n % 2 != 0 {
+			m = ds[i]
+		} else {
+			m = (ds[i] + ds[i - 1]) / 2
+		}
+	}
+	return m
+}
+
+func midpointTimeDuration(ds []time.Duration, f int) time.Duration {
+	if f == 0 {
+		return 0
+	}
+	n := len(ds)
+	if n < 3 * f + 1 {
+		return 0
+	}
+	sort.Slice(ds, func(i, j int) bool {
+		return ds[i] < ds[j]
+	})
+	return (ds[f] + ds[n - f - 1]) / 2
+}
+
 func ntpClockOffset() time.Duration {
 	var clockOffsets []time.Duration
 	for _, ntpHost := range ntpHosts {
 		off, err := ets.GetNTPClockOffset(ntpHost);
 		if err != nil {
-			log.Printf("Failed to get NTP clock offset: %v\n", err)
+			log.Printf("Failed to get NTP clock offset from %v: %v\n", ntpHost, err)
 		}
 		clockOffsets = append(clockOffsets, off)
 	}
-	sort.Slice(clockOffsets, func(i, j int) bool {
-		return clockOffsets[i] < clockOffsets[j]
-	})
+	return medianTimeDuration(clockOffsets)
+}
 
-	var clockOffset time.Duration
-	if len(clockOffsets) == 0 {
-		clockOffset = 0
-	} else {
-		i := len(clockOffsets) / 2
-		if len(clockOffsets) % 2 != 0 {
-			clockOffset = clockOffsets[i]
-		} else {
-			clockOffset = (clockOffsets[i] + clockOffsets[i - 1]) / 2
-		}
+func syncEntryClockOffset(syncInfos []tsp.SyncInfo) time.Duration {
+	var clockOffsets []time.Duration
+	for _, syncInfo := range syncInfos {
+		clockOffsets = append(clockOffsets, syncInfo.ClockOffset)
 	}
-
-	return clockOffset
+	return medianTimeDuration(clockOffsets)
 }
 
 func syncEntryForIA(syncEntries []syncEntry, ia addr.IA) *syncEntry {
@@ -158,15 +183,13 @@ func main() {
 		log.Fatal("Failed to start TSP propagator:", err)
 	}
 
+	var clockCorrection time.Duration
 	var syncEntries []syncEntry
 
 	flag := flagStartRound
-	now := time.Now().UTC()
+	now := time.Now().UTC().Add(clockCorrection)
 	syncTime := now.Add(roundPeriod).Truncate(roundPeriod)
-	log.Printf("Next sync time: %v\n", syncTime)
 	timer := time.NewTimer(syncTime.Add(-(roundDuration / 2)).Sub(now))
-
-	var clockOffset time.Duration
 
 	for {
 		select {
@@ -196,12 +219,12 @@ func main() {
 				syncEntries = nil
 
 				flag = flagBroadcast
-				now = time.Now().UTC()
+				now = time.Now().UTC().Add(clockCorrection)
 				timer.Reset(syncTime.Sub(now))
 			case flagBroadcast:
 				log.Printf("BROADCAST\n")
 
-				clockOffset = ntpClockOffset()
+				clockOffset := ntpClockOffset()
 
 				for remoteIA, ps := range pathInfo.CoreASes {
 					if syncEntryForIA(syncEntries, remoteIA) == nil {
@@ -226,22 +249,33 @@ func main() {
 				}
 
 				flag = flagUpdate
-				now = time.Now().UTC()
+				now = time.Now().UTC().Add(clockCorrection)
 				timer.Reset(syncTime.Add(roundDuration / 2).Sub(now))
 			case flagUpdate:
 				log.Printf("UPDATE\n")
 
+				var clockOffsets []time.Duration
 				for _, se := range syncEntries {
+					clockOffsets = append(clockOffsets, syncEntryClockOffset(se.syncInfos))
 					log.Printf("\t%v:\n", se.ia)
 					for _, sie := range se.syncInfos {
 						log.Printf("\t\t%v\n", sie)
 					}
 				}
 
+				var f int
+				if len(clockOffsets) != 0 {
+					f = (len(clockOffsets) - 1) / 3
+				}
+				d := midpointTimeDuration(clockOffsets, f);
+				log.Printf("Delta correction: %v\n", d)
+
+				clockCorrection += d
+				log.Printf("Overall correction: %v\n", clockCorrection)
+
 				flag = flagStartRound
-				now = time.Now().UTC()
+				now = time.Now().UTC().Add(clockCorrection)
 				syncTime = now.Add(roundPeriod).Truncate(roundPeriod)
-				log.Printf("Next sync time: %v\n", syncTime)
 				timer.Reset(syncTime.Add(-(roundDuration / 2)).Sub(now))
 			}
 		}
