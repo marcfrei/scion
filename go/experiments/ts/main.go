@@ -114,16 +114,28 @@ func midpointTimeDuration(ds []time.Duration, f int) time.Duration {
 	return (ds[f] + ds[n - f - 1]) / 2
 }
 
-func ntpClockOffset() time.Duration {
-	var clockOffsets []time.Duration
-	for _, ntpHost := range ntpHosts {
-		off, err := ets.GetNTPClockOffset(ntpHost);
-		if err != nil {
-			log.Printf("Failed to get NTP clock offset from %v: %v\n", ntpHost, err)
+func ntpClockOffset(ntpHosts []string) <-chan time.Duration {
+	clockOffset := make(chan time.Duration, 1)
+	go func () {
+		var clockOffsets []time.Duration
+		ch := make(chan time.Duration)
+		for _, h := range ntpHosts {
+				go func(host string) {
+						off, err := ets.GetNTPClockOffset(host)
+						if err != nil {
+							log.Printf("Failed to get NTP clock offset from %v: %v\n", host, err)
+						}
+						ch <- off
+				}(h)
 		}
-		clockOffsets = append(clockOffsets, off)
-	}
-	return medianTimeDuration(clockOffsets)
+		for i := 0; i != len(ntpHosts); i++ {
+			clockOffsets = append(clockOffsets, <-ch)
+		}
+		m := medianTimeDuration(clockOffsets)
+		log.Printf("Fetched local clock offset: %v\n", m)
+		clockOffset <- m
+	}()
+	return clockOffset
 }
 
 func syncEntryClockOffset(syncInfos []tsp.SyncInfo) time.Duration {
@@ -191,6 +203,11 @@ func main() {
 	syncTime := now.Add(roundPeriod).Truncate(roundPeriod)
 	timer := time.NewTimer(syncTime.Add(-(roundDuration / 2)).Sub(now))
 
+	var clockOffset struct {
+		val time.Duration
+		C <-chan time.Duration
+	}
+
 	for {
 		select {
 		case pathInfo = <-pathInfos:
@@ -211,12 +228,15 @@ func main() {
 				se.syncInfos = append(se.syncInfos, syncInfo)
 			}
 		case now = <-timer.C:
-			log.Printf("Received new timer signal: %v\n", now.UTC())
+			now = now.UTC()
+			log.Printf("Received new timer signal: %v, corrected: %v\n", now, now.Add(clockCorrection))
 			switch flag {
 			case flagStartRound:
 				log.Printf("START ROUND\n")
 
 				syncEntries = nil
+				clockOffset.val = 0
+				clockOffset.C = ntpClockOffset(ntpHosts)
 
 				flag = flagBroadcast
 				now = time.Now().UTC().Add(clockCorrection)
@@ -224,42 +244,56 @@ func main() {
 			case flagBroadcast:
 				log.Printf("BROADCAST\n")
 
-				clockOffset := ntpClockOffset()
+				if len(clockOffset.C) == 0 {
+					flag = flagStartRound
+					now = time.Now().UTC().Add(clockCorrection)
+					syncTime = now.Add(roundPeriod).Truncate(roundPeriod)
+					timer.Reset(syncTime.Add(-(roundDuration / 2)).Sub(now))
+				} else {
+					clockOffset.val = <-clockOffset.C - clockCorrection 
 
-				for remoteIA, ps := range pathInfo.CoreASes {
-					if syncEntryForIA(syncEntries, remoteIA) == nil {
-						syncEntries = append(syncEntries, syncEntry{
-							ia: remoteIA,
-						})
+					for remoteIA, ps := range pathInfo.CoreASes {
+						if syncEntryForIA(syncEntries, remoteIA) == nil {
+							syncEntries = append(syncEntries, syncEntry{
+								ia: remoteIA,
+							})
+						}
+						sp := ps[rand.Intn(len(ps))]
+						tsp.PropagatePacketTo(
+							newPacket(pathInfo.LocalIA, remoteIA, sp, clockOffset.val),
+							sp.UnderlayNextHop())
 					}
-					sp := ps[rand.Intn(len(ps))]
-					tsp.PropagatePacketTo(
-						newPacket(pathInfo.LocalIA, remoteIA, sp, clockOffset),
-						sp.UnderlayNextHop())
+					if !pathInfo.LocalIA.IsZero() {
+						if syncEntryForIA(syncEntries, pathInfo.LocalIA) == nil {
+							syncEntries = append(syncEntries, syncEntry{
+								ia: pathInfo.LocalIA,
+							})
+						}
+						for _, ip := range pathInfo.LocalTSHosts {
+							tsp.PropagatePacketTo(
+								newPacket(pathInfo.LocalIA, pathInfo.LocalIA, /* path: */ nil, clockOffset.val),
+								&net.UDPAddr{IP: ip, Port: topology.EndhostPort})
+						}
+					}
+					flag = flagUpdate
+					now = time.Now().UTC().Add(clockCorrection)
+					timer.Reset(syncTime.Add(roundDuration / 2).Sub(now))
 				}
-				if syncEntryForIA(syncEntries, pathInfo.LocalIA) == nil {
-					syncEntries = append(syncEntries, syncEntry{
-						ia: pathInfo.LocalIA,
-					})
-				}
-				for _, ip := range pathInfo.LocalTSHosts {
-					tsp.PropagatePacketTo(
-						newPacket(pathInfo.LocalIA, pathInfo.LocalIA, /* path: */ nil, clockOffset),
-						&net.UDPAddr{IP: ip, Port: topology.EndhostPort})
-				}
-
-				flag = flagUpdate
-				now = time.Now().UTC().Add(clockCorrection)
-				timer.Reset(syncTime.Add(roundDuration / 2).Sub(now))
 			case flagUpdate:
 				log.Printf("UPDATE\n")
 
 				var clockOffsets []time.Duration
 				for _, se := range syncEntries {
-					clockOffsets = append(clockOffsets, syncEntryClockOffset(se.syncInfos))
-					log.Printf("\t%v:\n", se.ia)
-					for _, sie := range se.syncInfos {
-						log.Printf("\t\t%v\n", sie)
+					var off time.Duration
+					if len(se.syncInfos) != 0 {
+						off = syncEntryClockOffset(se.syncInfos)
+					} else {
+						off = clockOffset.val
+					}
+					clockOffsets = append(clockOffsets, off)
+					log.Printf("\tISD-AS: %v:\n", se.ia)
+					for _, si := range se.syncInfos {
+						log.Printf("\t\tsyncInfo: %v\n", si)
 					}
 				}
 
