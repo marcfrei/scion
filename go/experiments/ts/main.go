@@ -105,7 +105,7 @@ func midpoint(ds []time.Duration, f int) time.Duration {
 	sort.Slice(ds, func(i, j int) bool {
 		return ds[i] < ds[j]
 	})
-	return (ds[f] + ds[len(ds) - f - 1]) / 2
+	return (ds[f] + ds[len(ds) - 1 - f]) / 2
 }
 
 func ntpClockOffset(ntpHosts []string) <-chan time.Duration {
