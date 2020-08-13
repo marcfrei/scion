@@ -82,10 +82,6 @@ func (h *forwarder) process(ctx context.Context,
 // classify validates the request and determines the segment type for the request
 func (h *forwarder) classify(ctx context.Context, src, dst addr.IA) (proto.PathSegType, error) {
 	unset := proto.PathSegType_unset // shorthand
-	if src.I == 0 || dst.I == 0 {
-		return unset, serrors.WithCtx(segfetcher.ErrInvalidRequest,
-			"src", src, "dst", dst, "reason", "zero ISD src or dst")
-	}
 	if dst == h.localIA {
 		// this could be an otherwise valid request, but probably the requester switched Src and Dst
 		return unset, serrors.WithCtx(segfetcher.ErrInvalidRequest,
