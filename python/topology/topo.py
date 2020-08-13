@@ -56,6 +56,7 @@ DEFAULT_BEACON_SERVERS = 1
 DEFAULT_GRACE_PERIOD = 18000
 DEFAULT_CONTROL_SERVERS = 1
 DEFAULT_COLIBRI_SERVERS = 1
+DEFAULT_TIME_SERVERS = 1
 
 UNDERLAY_4 = 'UDP/IPv4'
 UNDERLAY_6 = 'UDP/IPv6'
@@ -153,6 +154,8 @@ class TopoGenerator(object):
         srvs = [("control_servers", DEFAULT_CONTROL_SERVERS, "cs")]
         if self.args.colibri:
             srvs.append(("colibri_servers", DEFAULT_COLIBRI_SERVERS, "co"))
+        if as_conf.get('core', False):
+            srvs.append(("time_servers", DEFAULT_TIME_SERVERS, "ts"))
         for conf_key, def_num, nick in srvs:
             self._register_srv_entry(topo_id, as_conf, conf_key, def_num, nick)
 
@@ -263,6 +266,9 @@ class TopoGenerator(object):
         srvs = [("control_servers", DEFAULT_CONTROL_SERVERS, "cs", "control_service")]
         if self.args.colibri:
             srvs.append(("colibri_servers", DEFAULT_COLIBRI_SERVERS, "co", "colibri_service"))
+        if as_conf.get('core', False):
+            self.topo_dicts[topo_id]["time_services"] = {}
+            srvs.append(("time_servers", DEFAULT_TIME_SERVERS, "ts", "time_services"))
         for conf_key, def_num, nick, topo_key in srvs:
             self._gen_srv_entry(topo_id, as_conf, conf_key, def_num, nick, topo_key)
 
@@ -287,6 +293,8 @@ class TopoGenerator(object):
             return 30252
         if nick == "co":
             return 30257
+        if nick == "ts":
+            return 30258
         print('Invalid nick: %s' % nick)
         sys.exit(1)
 
