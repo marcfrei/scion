@@ -1,4 +1,4 @@
-package ets;
+package ets
 
 import (
 	"io/ioutil"
@@ -8,10 +8,9 @@ import (
 	"github.com/beevik/ntp"
 )
 
-var ntpLog = log.New(ioutil.Discard, "[ets/ntp] ", log.LstdFlags) 
+var ntpLog = log.New(ioutil.Discard, "[ets/ntp] ", log.LstdFlags)
 
-func GetNTPClockOffset(host string) (time.Duration, error) {
-
+func FetchNTPClockOffset(host string) (time.Duration, error) {
 	ntpLog.Printf("[%s] ----------------------", host)
 	ntpLog.Printf("[%s] NTP protocol version %d", host, 4)
 
@@ -19,7 +18,7 @@ func GetNTPClockOffset(host string) (time.Duration, error) {
 	if err != nil {
 		return 0, err
 	}
-	err = r.Validate();
+	err = r.Validate()
 	if err != nil {
 		return 0, err
 	}

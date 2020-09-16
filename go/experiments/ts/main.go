@@ -27,9 +27,16 @@ const (
 	flagBroadcast = 1
 	flagUpdate = 2
 
-	roundPeriod = 30 * time.Second
-	roundDuration = 10 * time.Second
+	roundPeriod = 5 * time.Second
+	roundDuration = 2 * time.Second
 )
+
+type timeSource interface {
+	fetchClockOffset() (time.Duration, error)
+}
+
+type mbgTimeSource string
+type ntpTimeSource string
 
 type syncEntry struct {
 	ia addr.IA
@@ -37,11 +44,12 @@ type syncEntry struct {
 }
 
 var (
-	ntpHosts = []string{
-		"time.apple.com",
-		"time.facebook.com",
-		"time.google.com",
-		"time.windows.com",
+	timeSources = []timeSource{
+		mbgTimeSource("/dev/mbgclock0"),
+		// ntpTimeSource("time.apple.com"),
+		// ntpTimeSource("time.facebook.com"),
+		// ntpTimeSource("time.google.com"),
+		// ntpTimeSource("time.windows.com"),
 	}
 
 	clockCorrection time.Duration
@@ -108,21 +116,29 @@ func midpoint(ds []time.Duration, f int) time.Duration {
 	return (ds[f] + ds[len(ds) - 1 - f]) / 2
 }
 
-func ntpClockOffset(ntpHosts []string) <-chan time.Duration {
+func (s mbgTimeSource) fetchClockOffset() (time.Duration, error) {
+	return ets.FetchMBGClockOffset(string(s))
+}
+
+func (s ntpTimeSource) fetchClockOffset() (time.Duration, error) {
+	return ets.FetchNTPClockOffset(string(s))
+}
+
+func fetchClockOffset() <-chan time.Duration {
 	clockOffset := make(chan time.Duration, 1)
 	go func () {
 		var clockOffsets []time.Duration
 		ch := make(chan time.Duration)
-		for _, h := range ntpHosts {
-				go func(host string) {
-						off, err := ets.GetNTPClockOffset(host)
+		for _, h := range timeSources {
+				go func(s timeSource) {
+						off, err := s.fetchClockOffset()
 						if err != nil {
-							log.Printf("Failed to get NTP clock offset from %v: %v\n", host, err)
+							log.Printf("Failed to fetch clock offset from %v: %v\n", s, err)
 						}
 						ch <- off
 				}(h)
 		}
-		for i := 0; i != len(ntpHosts); i++ {
+		for i := 0; i != len(timeSources); i++ {
 			clockOffsets = append(clockOffsets, <-ch)
 		}
 		m := median(clockOffsets)
@@ -223,11 +239,11 @@ func main() {
 	var syncEntries []syncEntry
 	var syncTime time.Time
 
-	clockCorrection = <-ntpClockOffset(ntpHosts)
+	clockCorrection = <-fetchClockOffset()
 
 	flag := flagStartRound
 	syncTimer := newTimer()
-	scheduleNextRound(syncTimer, &syncTime);
+	scheduleNextRound(syncTimer, &syncTime)
 
 	for {
 		select {
@@ -257,7 +273,7 @@ func main() {
 
 				syncEntries = nil
 				clockOffset.d = 0
-				clockOffset.c = ntpClockOffset(ntpHosts)
+				clockOffset.c = fetchClockOffset()
 
 				flag = flagBroadcast
 				scheduleBroadcast(syncTimer, syncTime)
@@ -320,13 +336,20 @@ func main() {
 					}
 				}
 
+				loff := clockOffset.d + clockCorrection
+				log.Printf("Local clock correction: %v -> %v\n", loff, now.Add(loff))
+
 				if len(clockOffsets) == 0 {
 					clockCorrection += clockOffset.d
 				} else {
 					f := (len(clockOffsets) - 1) / 3
-					clockCorrection += midpoint(clockOffsets, f);
+					clockCorrection += midpoint(clockOffsets, f)
 				}
-				log.Printf("Clock correction: %v -> %v\n", clockCorrection, syncedTime())
+				// log.Printf("Clock correction: %v -> %v\n", clockCorrection, syncedTime())
+
+				goff := clockCorrection
+				log.Printf("Global clock correction: %v -> %v\n", goff, now.Add(goff))
+				log.Printf("Global/local clock diff: %v\n", now.Add(goff).Sub(now.Add(loff)))
 
 				flag = flagStartRound
 				scheduleNextRound(syncTimer, &syncTime)
