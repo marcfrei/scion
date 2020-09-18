@@ -118,8 +118,8 @@ func FetchMBGClockOffset(dev string) (time.Duration, error) {
 	sysTimeSeconds := int64(binary.LittleEndian.Uint64(timeData[39:]))
 	sysTimeNanoseconds := int64(binary.LittleEndian.Uint64(timeData[47:]))
 
-	refTime := time.Unix(refTimeSeconds, nanoseconds(refTimeFractions))
-	sysTime := time.Unix(sysTimeSeconds, sysTimeNanoseconds)
+	refTime := time.Unix(refTimeSeconds, nanoseconds(refTimeFractions)).UTC()
+	sysTime := time.Unix(sysTimeSeconds, sysTimeNanoseconds).UTC()
 
 	mbgLog.Printf("RefTime: %v, UTC offset: %v, status: %v, signal: %v",
 		refTime, refTimeUTCOffset, refTimeStatus, refTimeSignal)
