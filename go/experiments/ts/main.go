@@ -212,7 +212,7 @@ func main() {
 
 	pathInfos, err := tsp.StartPather(newSciondConnector(sciondAddr, ctx), ctx)
 	if err != nil {
-		log.Fatal("Failed to start TSP originator:", err)
+		log.Fatal("Failed to start TSP pather:", err)
 	}
 	var pathInfo tsp.PathInfo
 
