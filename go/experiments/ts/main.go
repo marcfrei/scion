@@ -45,11 +45,11 @@ type syncEntry struct {
 
 var (
 	timeSources = []timeSource{
-		mbgTimeSource("/dev/mbgclock0"),
-		// ntpTimeSource("time.apple.com"),
-		// ntpTimeSource("time.facebook.com"),
-		// ntpTimeSource("time.google.com"),
-		// ntpTimeSource("time.windows.com"),
+		// mbgTimeSource("/dev/mbgclock0"),
+		ntpTimeSource("time.apple.com"),
+		ntpTimeSource("time.facebook.com"),
+		ntpTimeSource("time.google.com"),
+		ntpTimeSource("time.windows.com"),
 	}
 
 	clockCorrection time.Duration
