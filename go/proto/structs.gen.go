@@ -44,12 +44,6 @@ func NewRootStruct(id ProtoIdType, seg *capnp.Segment) (capnp.Struct, error) {
 			return blank, common.NewBasicError("Error creating new RevInfo capnp struct", err)
 		}
 		return v.Struct, nil
-	case SCIONDMsg_TypeID:
-		v, err := NewRootSCIONDMsg(seg)
-		if err != nil {
-			return blank, common.NewBasicError("Error creating new SCIONDMsg capnp struct", err)
-		}
-		return v.Struct, nil
 	case SignedBlob_TypeID:
 		v, err := NewRootSignedBlob(seg)
 		if err != nil {
@@ -95,9 +89,6 @@ func (s PathSegmentSignedData) GetStruct() capnp.Struct {
 	return s.Struct
 }
 func (s RevInfo) GetStruct() capnp.Struct {
-	return s.Struct
-}
-func (s SCIONDMsg) GetStruct() capnp.Struct {
 	return s.Struct
 }
 func (s SignedBlob) GetStruct() capnp.Struct {

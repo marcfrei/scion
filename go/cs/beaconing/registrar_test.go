@@ -37,36 +37,34 @@ import (
 	"github.com/scionproto/scion/go/cs/ifstate"
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
-	"github.com/scionproto/scion/go/lib/ctrl"
 	"github.com/scionproto/scion/go/lib/ctrl/seg"
 	"github.com/scionproto/scion/go/lib/infra/modules/itopo/itopotest"
 	"github.com/scionproto/scion/go/lib/infra/modules/seghandler"
 	"github.com/scionproto/scion/go/lib/scrypto"
 	"github.com/scionproto/scion/go/lib/scrypto/cppki"
+	"github.com/scionproto/scion/go/lib/scrypto/signed"
+	"github.com/scionproto/scion/go/lib/slayers/path/scion"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/snet/addrutil"
 	"github.com/scionproto/scion/go/lib/xtest/graph"
 	"github.com/scionproto/scion/go/pkg/trust"
-	"github.com/scionproto/scion/go/proto"
 )
 
 func TestRegistrarRun(t *testing.T) {
-	mac, err := scrypto.InitMac(make(common.RawBytes, 16))
-	require.NoError(t, err)
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	pub := priv.Public()
 
 	testsLocal := []struct {
 		name          string
-		segType       proto.PathSegType
+		segType       seg.Type
 		fn            string
 		beacons       [][]common.IFIDType
 		inactivePeers map[common.IFIDType]bool
 	}{
 		{
 			name:    "Core segment",
-			segType: proto.PathSegType_core,
+			segType: seg.TypeCore,
 			fn:      topoCore,
 			beacons: [][]common.IFIDType{
 				{graph.If_120_A_110_X},
@@ -75,7 +73,7 @@ func TestRegistrarRun(t *testing.T) {
 		},
 		{
 			name:          "Up segment",
-			segType:       proto.PathSegType_up,
+			segType:       seg.TypeUp,
 			fn:            topoNonCore,
 			inactivePeers: map[common.IFIDType]bool{graph.If_111_C_121_X: true},
 			beacons: [][]common.IFIDType{
@@ -94,13 +92,13 @@ func TestRegistrarRun(t *testing.T) {
 			segStore := mock_beaconing.NewMockSegmentStore(mctrl)
 
 			r := Registrar{
-				Extender: &LegacyExtender{
+				Extender: &DefaultExtender{
 					IA:         topoProvider.Get().IA(),
 					MTU:        topoProvider.Get().MTU(),
 					Signer:     testSigner(t, priv, topoProvider.Get().IA()),
 					Intfs:      intfs,
-					MAC:        func() hash.Hash { return mac },
-					MaxExpTime: maxExpTimeFactory(beacon.DefaultMaxExpTime),
+					MAC:        macFactory,
+					MaxExpTime: func() uint8 { return uint8(beacon.DefaultMaxExpTime) },
 					StaticInfo: func() *StaticInfoCfg { return nil },
 				},
 				IA:       topoProvider.Get().IA(),
@@ -109,8 +107,12 @@ func TestRegistrarRun(t *testing.T) {
 				Tick:     NewTick(time.Hour),
 				Provider: segProvider,
 				Store:    segStore,
-				Pather:   addrutil.LegacyPather{TopoProvider: topoProvider},
-				Type:     test.segType,
+				Pather: addrutil.Pather{
+					UnderlayNextHop: func(ifID uint16) (*net.UDPAddr, bool) {
+						return topoProvider.Get().UnderlayNextHop2(common.IFIDType(ifID))
+					},
+				},
+				Type: test.segType,
 			}
 			g := graph.NewDefaultGraph(mctrl)
 			segProvider.EXPECT().SegmentsToRegister(gomock.Any(), test.segType).DoAndReturn(
@@ -143,7 +145,7 @@ func TestRegistrarRun(t *testing.T) {
 			for _, s := range stored {
 				assert.NoError(t, s.Segment.Validate(seg.ValidateSegment))
 				assert.NoError(t, s.Segment.VerifyASEntry(context.Background(),
-					segVerifier{pubKey: pub}, s.Segment.MaxAEIdx()))
+					segVerifier{pubKey: pub}, s.Segment.MaxIdx()))
 				assert.Equal(t, test.segType, s.Type)
 			}
 			// The second run should not do anything, since the period has not passed.
@@ -152,7 +154,7 @@ func TestRegistrarRun(t *testing.T) {
 	}
 	testsRemote := []struct {
 		name          string
-		segType       proto.PathSegType
+		segType       seg.Type
 		fn            string
 		beacons       [][]common.IFIDType
 		inactivePeers map[common.IFIDType]bool
@@ -160,7 +162,7 @@ func TestRegistrarRun(t *testing.T) {
 	}{
 		{
 			name:          "Down segment",
-			segType:       proto.PathSegType_down,
+			segType:       seg.TypeDown,
 			fn:            topoNonCore,
 			inactivePeers: map[common.IFIDType]bool{graph.If_111_C_121_X: true},
 			beacons: [][]common.IFIDType{
@@ -180,13 +182,13 @@ func TestRegistrarRun(t *testing.T) {
 			rpc := mock_beaconing.NewMockRPC(mctrl)
 
 			r := Registrar{
-				Extender: &LegacyExtender{
+				Extender: &DefaultExtender{
 					IA:         topoProvider.Get().IA(),
 					MTU:        topoProvider.Get().MTU(),
 					Signer:     testSigner(t, priv, topoProvider.Get().IA()),
 					Intfs:      intfs,
-					MAC:        func() hash.Hash { return mac },
-					MaxExpTime: maxExpTimeFactory(beacon.DefaultMaxExpTime),
+					MAC:        macFactory,
+					MaxExpTime: func() uint8 { return uint8(beacon.DefaultMaxExpTime) },
 					StaticInfo: func() *StaticInfoCfg { return nil },
 				},
 				IA:       topoProvider.Get().IA(),
@@ -194,9 +196,13 @@ func TestRegistrarRun(t *testing.T) {
 				Intfs:    intfs,
 				Tick:     NewTick(time.Hour),
 				Provider: segProvider,
-				Pather:   addrutil.LegacyPather{TopoProvider: topoProvider},
-				Type:     test.segType,
-				RPC:      rpc,
+				Pather: addrutil.Pather{
+					UnderlayNextHop: func(ifID uint16) (*net.UDPAddr, bool) {
+						return topoProvider.Get().UnderlayNextHop2(common.IFIDType(ifID))
+					},
+				},
+				Type: test.segType,
+				RPC:  rpc,
 			}
 			g := graph.NewDefaultGraph(mctrl)
 			segProvider.EXPECT().SegmentsToRegister(gomock.Any(), test.segType).DoAndReturn(
@@ -242,21 +248,29 @@ func TestRegistrarRun(t *testing.T) {
 
 					assert.NoError(t, pseg.Validate(seg.ValidateSegment))
 					assert.NoError(t, pseg.VerifyASEntry(context.Background(),
-						segVerifier{pubKey: pub}, pseg.MaxAEIdx()))
+						segVerifier{pubKey: pub}, pseg.MaxIdx()))
 
 					if !test.remotePS {
 						assert.Equal(t, topoProvider.Get().IA(), s.Addr.IA)
-						assert.Equal(t, addr.SvcPS, s.Addr.SVC)
+						assert.Equal(t, addr.SvcCS, s.Addr.SVC)
 						return
 					}
 					assert.Equal(t, pseg.FirstIA(), s.Addr.IA)
-					assert.Equal(t, addr.SvcPS, s.Addr.SVC)
-					hopF, err := s.Addr.Path.GetHopField(s.Addr.Path.HopOff)
-					require.NoError(t, err)
-					assert.Equal(t, []uint8(hopF.Pack()),
-						pseg.ASEntries[pseg.MaxAEIdx()].HopEntries[0].RawHopField)
-					a := topoProvider.Get().IFInfoMap()[hopF.ConsIngress].InternalAddr
-					assert.Equal(t, a, s.Addr.NextHop)
+					assert.Equal(t, addr.SvcCS, s.Addr.SVC)
+
+					var path scion.Decoded
+					if assert.NoError(t, path.DecodeFromBytes(s.Addr.Path.Raw)) {
+						pathHopField := path.HopFields[0]
+
+						segHopField := pseg.ASEntries[pseg.MaxIdx()].HopEntry.HopField
+						assert.Equal(t, []byte(pathHopField.Mac), segHopField.MAC)
+						assert.Equal(t, pathHopField.ConsIngress, segHopField.ConsIngress)
+						assert.Equal(t, pathHopField.ConsEgress, segHopField.ConsEgress)
+
+						nextHop := common.IFIDType(pathHopField.ConsIngress)
+						a := topoProvider.Get().IFInfoMap()[nextHop].InternalAddr
+						assert.Equal(t, a, s.Addr.NextHop)
+					}
 				})
 			}
 			// The second run should not do anything, since the period has not passed.
@@ -271,13 +285,13 @@ func TestRegistrarRun(t *testing.T) {
 		segProvider := mock_beaconing.NewMockSegmentProvider(mctrl)
 
 		r := Registrar{
-			Extender: &LegacyExtender{
+			Extender: &DefaultExtender{
 				IA:         topoProvider.Get().IA(),
 				MTU:        topoProvider.Get().MTU(),
 				Signer:     testSigner(t, priv, topoProvider.Get().IA()),
 				Intfs:      intfs,
-				MAC:        func() hash.Hash { return mac },
-				MaxExpTime: maxExpTimeFactory(beacon.DefaultMaxExpTime),
+				MAC:        macFactory,
+				MaxExpTime: func() uint8 { return uint8(beacon.DefaultMaxExpTime) },
 				StaticInfo: func() *StaticInfoCfg { return nil },
 			},
 			IA:       topoProvider.Get().IA(),
@@ -285,11 +299,15 @@ func TestRegistrarRun(t *testing.T) {
 			Intfs:    intfs,
 			Tick:     NewTick(time.Hour),
 			Provider: segProvider,
-			Pather:   addrutil.LegacyPather{TopoProvider: topoProvider},
-			Type:     proto.PathSegType_core,
+			Pather: addrutil.Pather{
+				UnderlayNextHop: func(ifID uint16) (*net.UDPAddr, bool) {
+					return topoProvider.Get().UnderlayNextHop2(common.IFIDType(ifID))
+				},
+			},
+			Type: seg.TypeCore,
 		}
 		res := make(chan beacon.BeaconOrErr, 3)
-		segProvider.EXPECT().SegmentsToRegister(gomock.Any(), proto.PathSegType_core).DoAndReturn(
+		segProvider.EXPECT().SegmentsToRegister(gomock.Any(), seg.TypeCore).DoAndReturn(
 			func(_, _ interface{}) (<-chan beacon.BeaconOrErr, error) {
 				for i := 0; i < 3; i++ {
 					res <- beacon.BeaconOrErr{Err: errors.New("Invalid beacon")}
@@ -314,13 +332,13 @@ func TestRegistrarRun(t *testing.T) {
 		rpc := mock_beaconing.NewMockRPC(mctrl)
 
 		r := Registrar{
-			Extender: &LegacyExtender{
+			Extender: &DefaultExtender{
 				IA:         topoProvider.Get().IA(),
 				MTU:        topoProvider.Get().MTU(),
 				Signer:     testSigner(t, priv, topoProvider.Get().IA()),
 				Intfs:      intfs,
-				MAC:        func() hash.Hash { return mac },
-				MaxExpTime: maxExpTimeFactory(beacon.DefaultMaxExpTime),
+				MAC:        macFactory,
+				MaxExpTime: func() uint8 { return uint8(beacon.DefaultMaxExpTime) },
 				StaticInfo: func() *StaticInfoCfg { return nil },
 			},
 			IA:       topoProvider.Get().IA(),
@@ -328,14 +346,18 @@ func TestRegistrarRun(t *testing.T) {
 			Intfs:    intfs,
 			Tick:     NewTick(time.Hour),
 			Provider: segProvider,
-			Pather:   addrutil.LegacyPather{TopoProvider: topoProvider},
-			Type:     proto.PathSegType_down,
-			RPC:      rpc,
+			Pather: addrutil.Pather{
+				UnderlayNextHop: func(ifID uint16) (*net.UDPAddr, bool) {
+					return topoProvider.Get().UnderlayNextHop2(common.IFIDType(ifID))
+				},
+			},
+			Type: seg.TypeDown,
+			RPC:  rpc,
 		}
 		g := graph.NewDefaultGraph(mctrl)
 		require.NoError(t, err)
 		segProvider.EXPECT().SegmentsToRegister(gomock.Any(),
-			proto.PathSegType_down).DoAndReturn(
+			seg.TypeDown).DoAndReturn(
 			func(_, _ interface{}) (<-chan beacon.BeaconOrErr, error) {
 				res := make(chan beacon.BeaconOrErr, 1)
 				b := testBeaconOrErr(g, []common.IFIDType{graph.If_120_X_111_B})
@@ -349,19 +371,22 @@ func TestRegistrarRun(t *testing.T) {
 }
 
 func testBeaconOrErr(g *graph.Graph, desc []common.IFIDType) beacon.BeaconOrErr {
-	b := testBeacon(g, desc)
-	asEntry := b.Segment.ASEntries[b.Segment.MaxAEIdx()]
+	bseg := g.Beacon(desc)
+	asEntry := bseg.ASEntries[bseg.MaxIdx()]
+	bseg.ASEntries = bseg.ASEntries[:len(bseg.ASEntries)-1]
+
 	return beacon.BeaconOrErr{
 		Beacon: beacon.Beacon{
-			InIfId:  asEntry.HopEntries[0].RemoteOutIF,
-			Segment: b.Segment,
+			InIfId:  common.IFIDType(asEntry.HopEntry.HopField.ConsIngress),
+			Segment: bseg,
 		},
 	}
 }
 
-func testSigner(t *testing.T, priv crypto.Signer, ia addr.IA) ctrl.Signer {
+func testSigner(t *testing.T, priv crypto.Signer, ia addr.IA) seg.Signer {
 	return trust.Signer{
 		PrivateKey: priv,
+		Algorithm:  signed.ECDSAWithSHA512,
 		IA:         ia,
 		TRCID: cppki.TRCID{
 			ISD:    ia.I,
@@ -371,4 +396,13 @@ func testSigner(t *testing.T, priv crypto.Signer, ia addr.IA) ctrl.Signer {
 		SubjectKeyID: []byte("skid"),
 		Expiration:   time.Now().Add(time.Hour),
 	}
+}
+
+var macFactory = func() hash.Hash {
+	mac, err := scrypto.InitMac(make([]byte, 16))
+	// This can only happen if the library is messed up badly.
+	if err != nil {
+		panic(err)
+	}
+	return mac
 }

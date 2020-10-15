@@ -22,14 +22,17 @@ import (
 	"time"
 
 	opentracing "github.com/opentracing/opentracing-go"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/env"
 	"github.com/scionproto/scion/go/lib/infra/modules/itopo"
+	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/scrypto"
 	"github.com/scionproto/scion/go/lib/scrypto/cppki"
 	"github.com/scionproto/scion/go/lib/serrors"
 	cstrust "github.com/scionproto/scion/go/pkg/cs/trust"
+	"github.com/scionproto/scion/go/pkg/discovery"
 	"github.com/scionproto/scion/go/pkg/service"
 )
 
@@ -43,16 +46,37 @@ func InitTracer(tracing env.Tracing, id string) (io.Closer, error) {
 	return trCloser, nil
 }
 
+// Metrics defines the metrics exposed by the control server.
+//
+// XXX(roosd): Currently, most counters are created in the packages. The will
+// eventually be moved here.
+type Metrics struct {
+	DiscoveryRequestsTotal *prometheus.CounterVec
+}
+
+func NewMetrics() *Metrics {
+	return &Metrics{
+		DiscoveryRequestsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "discovery_requests_total",
+				Help: "Total number of discovery requests served.",
+			},
+			discovery.Topology{}.RequestsLabels(),
+		),
+	}
+
+}
+
 // StartHTTPEndpoints starts the HTTP endpoints that expose the metrics and
 // additional information.
 func StartHTTPEndpoints(elemId string, cfg interface{}, signer cstrust.RenewingSigner,
 	ca cstrust.ChainBuilder, metrics env.Metrics) error {
-
 	statusPages := service.StatusPages{
-		"info":     service.NewInfoHandler(),
-		"config":   service.NewConfigHandler(cfg),
-		"topology": itopo.TopologyHandler,
-		"signer":   signerHandler(signer),
+		"info":      service.NewInfoHandler(),
+		"config":    service.NewConfigHandler(cfg),
+		"topology":  itopo.TopologyHandler,
+		"signer":    signerHandler(signer),
+		"log/level": log.ConsoleLevel.ServeHTTP,
 	}
 	if ca != (cstrust.ChainBuilder{}) {
 		statusPages["ca"] = caHandler(ca)

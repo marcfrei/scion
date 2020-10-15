@@ -21,7 +21,6 @@ import (
 
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
-	"github.com/scionproto/scion/go/lib/scmp"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/snet"
 	jsontopo "github.com/scionproto/scion/go/lib/topology/json"
@@ -90,6 +89,9 @@ type Topology interface {
 
 	// MakeHostInfos returns the underlay addresses of all services for the specified service type.
 	MakeHostInfos(st proto.ServiceType) []net.UDPAddr
+
+	// Gateways returns an array of all gateways.
+	Gateways() ([]GatewayInfo, error)
 
 	// BR returns information for a specific border router
 	//
@@ -223,6 +225,22 @@ func (t *topologyS) CA() bool {
 	return false
 }
 
+func (t *topologyS) Gateways() ([]GatewayInfo, error) {
+	ret := []GatewayInfo{}
+	keys := []string{}
+	for k := range t.Topology.SIG {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		v := t.Topology.SIG[k]
+		ret = append(ret, v)
+	}
+
+	return ret, nil
+}
+
 func (t *topologyS) BR(name string) (BRInfo, bool) {
 	br, ok := t.Topology.BR[name]
 	return br, ok
@@ -243,10 +261,18 @@ func (t *topologyS) Exists(svc addr.HostSVC, name string) bool {
 func (t *topologyS) topoAddress(svc addr.HostSVC, name string) *TopoAddr {
 	var addresses IDAddrMap
 	switch svc.Base() {
-	case addr.SvcBS, addr.SvcCS, addr.SvcPS:
+	case addr.SvcDS:
+		addresses = t.Topology.DS
+	case addr.SvcCS:
 		addresses = t.Topology.CS
 	case addr.SvcSIG:
-		addresses = t.Topology.SIG
+		if len(t.Topology.SIG) == 0 {
+			break
+		}
+		addresses = make(IDAddrMap)
+		for k, v := range t.Topology.SIG {
+			addresses[k] = *v.CtrlAddr
+		}
 	case addr.SvcTS:
 		addresses = t.Topology.TS
 	}
@@ -293,15 +319,9 @@ func (t *topologyS) UnderlayAnycast(svc addr.HostSVC) (*net.UDPAddr, error) {
 	name, err := names.GetRandom()
 	if err != nil {
 		if supportedSVC(svc) {
-			// FIXME(scrye): Return this error because some calling code in the BR searches for it.
-			// Ideally, the error should be communicated in a more explicit way.
-			return nil, serrors.WrapStr("No instances found for SVC address",
-				scmp.NewError(scmp.C_Routing, scmp.T_R_UnreachHost, nil, nil), "svc", svc)
+			return nil, serrors.New("no instances found for service", "svc", svc)
 		}
-		// FIXME(scrye): Return this error because some calling code in the BR searches for it.
-		// Ideally, the error should be communicated in a more explicit way.
-		return nil, serrors.Wrap(addr.ErrUnsupportedSVCAddress,
-			scmp.NewError(scmp.C_Routing, scmp.T_R_BadHost, nil, nil), "svc", svc)
+		return nil, serrors.WithCtx(addr.ErrUnsupportedSVCAddress, "svc", svc)
 	}
 	underlay, err := t.UnderlayByName(svc, name)
 	if err != nil {
@@ -314,8 +334,7 @@ func (t *topologyS) UnderlayAnycast(svc addr.HostSVC) (*net.UDPAddr, error) {
 
 func supportedSVC(svc addr.HostSVC) bool {
 	b := svc.Base()
-	return b == addr.SvcBS || b == addr.SvcCS || b == addr.SvcPS || b == addr.SvcSIG ||
-		b == addr.SvcTS
+	return b == addr.SvcDS || b == addr.SvcCS || b == addr.SvcSIG || b == addr.SvcTS
 }
 
 func (t *topologyS) UnderlayMulticast(svc addr.HostSVC) ([]*net.UDPAddr, error) {
@@ -329,10 +348,7 @@ func (t *topologyS) UnderlayMulticast(svc addr.HostSVC) ([]*net.UDPAddr, error) 
 	}
 
 	if len(topoAddrs) == 0 {
-		// FIXME(scrye): Return this error because some calling code in the BR searches for it.
-		// Ideally, the error should be communicated in a more explicit way.
-		return nil, common.NewBasicError("No instances found for SVC address",
-			scmp.NewError(scmp.C_Routing, scmp.T_R_UnreachHost, nil, nil), "svc", svc)
+		return nil, serrors.New("no instances found for service", "svc", svc)
 	}
 
 	// Only select each IP:UnderlayPort combination once, s.t. the same message isn't multicasted
@@ -371,17 +387,16 @@ func (t *topologyS) UnderlayByName(svc addr.HostSVC, name string) (*net.UDPAddr,
 
 func toProtoServiceType(svc addr.HostSVC) (proto.ServiceType, error) {
 	switch svc.Base() {
-	case addr.SvcBS, addr.SvcCS, addr.SvcPS:
+	case addr.SvcDS:
+		return proto.ServiceType_ds, nil
+	case addr.SvcCS:
 		return proto.ServiceType_cs, nil
 	case addr.SvcSIG:
 		return proto.ServiceType_sig, nil
 	case addr.SvcTS:
 		return proto.ServiceType_ts, nil
 	default:
-		// FIXME(scrye): Return this error because some calling code in the BR searches for it.
-		// Ideally, the error should be communicated in a more explicit way.
-		return 0, serrors.Wrap(addr.ErrUnsupportedSVCAddress,
-			scmp.NewError(scmp.C_Routing, scmp.T_R_BadHost, nil, nil), "svc", svc)
+		return 0, serrors.WithCtx(addr.ErrUnsupportedSVCAddress, "svc", svc)
 	}
 }
 
@@ -408,10 +423,18 @@ func (t *topologyS) SBRAddress(name string) *snet.UDPAddr {
 func (t *topologyS) SVCNames(svc addr.HostSVC) ServiceNames {
 	var m IDAddrMap
 	switch svc.Base() {
-	case addr.SvcBS, addr.SvcCS, addr.SvcPS:
+	case addr.SvcDS:
+		m = t.Topology.DS
+	case addr.SvcCS:
 		m = t.Topology.CS
 	case addr.SvcSIG:
-		m = t.Topology.SIG
+		if len(t.Topology.SIG) == 0 {
+			break
+		}
+		m = make(IDAddrMap)
+		for k, v := range t.Topology.SIG {
+			m[k] = *v.CtrlAddr
+		}
 	case addr.SvcTS:
 		m = t.Topology.TS
 	}

@@ -20,7 +20,6 @@ import (
 	"net"
 	"time"
 
-	"github.com/scionproto/scion/go/dispatcher/dispatcher"
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/ctrl/sig_mgmt"
@@ -92,10 +91,7 @@ func initNetwork(cfg sigconfig.SigConf, sdCfg env.SCIONDClient,
 	features env.Features) (*snet.SCIONNetwork, sciond.Connector, pathmgr.Resolver, error) {
 
 	var err error
-	Dispatcher, err = newDispatcher(cfg)
-	if err != nil {
-		return nil, nil, nil, serrors.WrapStr("unable to initialize SCION dispatcher", err)
-	}
+	Dispatcher = reliable.NewDispatcher("")
 	var sciondConn sciond.Connector
 	if sdCfg.FakeData != "" {
 		sciondConn, err = initFakeSCIOND(cfg, sdCfg, features)
@@ -109,14 +105,18 @@ func initNetwork(cfg sigconfig.SigConf, sdCfg env.SCIONDClient,
 		}
 	}
 
-	ia, _ := sciondConn.LocalIA(context.Background())
-	pathResolver := pathmgr.New(sciondConn, pathmgr.Timers{}, 0)
+	ia, err := sciondConn.LocalIA(context.Background())
+	if err != nil {
+		return nil, nil, nil, serrors.WrapStr("discovering local ISD-AS", err)
+	}
+	pathResolver := pathmgr.New(sciondConn, pathmgr.Timers{})
 	network := &snet.SCIONNetwork{
 		LocalIA: ia,
 		Dispatcher: &snet.DefaultPacketDispatcherService{
-			Dispatcher:  Dispatcher,
-			SCMPHandler: snet.NewSCMPHandler(pathResolver),
-			Version2:    features.HeaderV2,
+			Dispatcher: Dispatcher,
+			SCMPHandler: snet.DefaultSCMPHandler{
+				RevocationHandler: pathResolver,
+			},
 		},
 	}
 	return network, sciondConn, pathResolver, nil
@@ -146,27 +146,6 @@ func initRealSCIOND(cfg sigconfig.SigConf,
 		time.Sleep(time.Second)
 	}
 	return nil, retErr
-}
-
-func newDispatcher(cfg sigconfig.SigConf) (reliable.Dispatcher, error) {
-	if cfg.DispatcherBypass == "" {
-		log.Info("Regular SCION dispatcher", "addr", cfg.DispatcherBypass)
-		return reliable.NewDispatcher(""), nil
-	}
-	// Initialize dispatcher bypass.
-	log.Info("Bypassing SCION dispatcher", "addr", cfg.DispatcherBypass)
-	dispServer, err := dispatcher.NewServer(cfg.DispatcherBypass, nil, nil)
-	if err != nil {
-		return nil, serrors.WrapStr("unable to initialize bypass dispatcher", err)
-	}
-	go func() {
-		defer log.HandlePanic()
-		err := dispServer.Serve()
-		if err != nil {
-			log.Error("Bypass dispatcher failed", "err", err)
-		}
-	}()
-	return dispServer, nil
 }
 
 func ValidatePort(desc string, port int) error {
@@ -202,7 +181,7 @@ func findDefaultLocalIP(ctx context.Context, sciondConn sciond.Connector) (net.I
 
 // findAnyHostInLocalAS returns the IP address of some (infrastructure) host in the local AS.
 func findAnyHostInLocalAS(ctx context.Context, sciondConn sciond.Connector) (net.IP, error) {
-	addr, err := sciond.TopoQuerier{Connector: sciondConn}.UnderlayAnycast(ctx, addr.SvcBS)
+	addr, err := sciond.TopoQuerier{Connector: sciondConn}.UnderlayAnycast(ctx, addr.SvcCS)
 	if err != nil {
 		return nil, err
 	}

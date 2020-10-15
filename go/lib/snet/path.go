@@ -44,6 +44,7 @@ type Path interface {
 	Path() *spath.Path
 	// Interfaces returns a list of interfaces on the path. If the list is not
 	// available the result is nil.
+	// XXX(matzf): move this to PathMetadata
 	Interfaces() []PathInterface
 	// Destination is the AS the path points to. Empty paths return the local
 	// AS of the router that created them.
@@ -55,17 +56,20 @@ type Path interface {
 	Copy() Path
 }
 
-// PathInterface is an interface of the path. This is currently an interface so
-// that packages which can not depend on snet can still implement the snet.Path
-// interface.
-type PathInterface interface {
+// PathInterface is an interface of the path.
+type PathInterface struct {
 	// ID is the ID of the interface.
-	ID() common.IFIDType
+	ID common.IFIDType
 	// IA is the ISD AS identifier of the interface.
-	IA() addr.IA
+	IA addr.IA
+}
+
+func (iface PathInterface) String() string {
+	return fmt.Sprintf("%s#%d", iface.IA, iface.ID)
 }
 
 // PathMetadata contains supplementary information about a path.
+// XXX(matzf): change this to a struct type
 type PathMetadata interface {
 	// MTU returns the MTU of the path.
 	MTU() uint16
@@ -79,19 +83,23 @@ func (pf PathFingerprint) String() string {
 	return common.RawBytes(pf).String()
 }
 
+type Fingerprinter interface {
+	Interfaces() []PathInterface
+}
+
 // Fingerprint uniquely identifies the path based on the sequence of
 // ASes and BRs, i.e. by its PathInterfaces.
 // Other metadata, such as MTU or NextHop have no effect on the fingerprint.
 // Returns empty string for paths where the interfaces list is not available.
-func Fingerprint(path Path) PathFingerprint {
+func Fingerprint(path Fingerprinter) PathFingerprint {
 	interfaces := path.Interfaces()
 	if len(interfaces) == 0 {
 		return ""
 	}
 	h := sha256.New()
 	for _, intf := range interfaces {
-		binary.Write(h, binary.BigEndian, intf.IA().IAInt())
-		binary.Write(h, binary.BigEndian, intf.ID())
+		binary.Write(h, binary.BigEndian, intf.IA.IAInt())
+		binary.Write(h, binary.BigEndian, intf.ID)
 	}
 	return PathFingerprint(h.Sum(nil))
 }

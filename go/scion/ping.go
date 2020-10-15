@@ -46,6 +46,7 @@ func newPing(pather CommandPather) *cobra.Command {
 		dispatcher  string
 		timeout     time.Duration
 		maxMTU      bool
+		noColor     bool
 
 		features []string
 	}
@@ -59,10 +60,6 @@ func newPing(pather CommandPather) *cobra.Command {
 			remote, err := snet.ParseUDPAddr(args[0])
 			if err != nil {
 				return serrors.WrapStr("parsing remote", err)
-			}
-			features, err := parseFeatures(flags.features)
-			if err != nil {
-				return err
 			}
 			cmd.SilenceUsage = true
 
@@ -78,7 +75,7 @@ func newPing(pather CommandPather) *cobra.Command {
 				return err
 			}
 			path, err := app.ChoosePath(context.Background(), sd, remote.IA,
-				flags.interactive, flags.refresh)
+				flags.interactive, flags.refresh, app.WithDisableColor(flags.noColor))
 			if err != nil {
 				return err
 			}
@@ -105,12 +102,12 @@ func newPing(pather CommandPather) *cobra.Command {
 			pldSize := int(flags.size)
 			if flags.maxMTU {
 				mtu := int(path.Metadata().MTU())
-				pldSize, err = calcMaxPldSize(local, remote, mtu, features.HeaderV2)
+				pldSize, err = calcMaxPldSize(local, remote, mtu)
 				if err != nil {
 					return err
 				}
 			}
-			pktSize, err := calcPktSize(local, remote, pldSize, features.HeaderV2)
+			pktSize, err := ping.Size(local, remote, pldSize)
 			if err != nil {
 				return err
 			}
@@ -147,7 +144,6 @@ func newPing(pather CommandPather) *cobra.Command {
 						update.Size, update.Source.IA, update.Source.Host, update.Sequence,
 						update.RTT, additional)
 				},
-				HeaderV2: features.HeaderV2,
 			})
 			pingSummary(stats, remote, time.Since(start))
 			if err != nil {
@@ -158,6 +154,7 @@ func newPing(pather CommandPather) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVarP(&flags.interactive, "interactive", "i", false, "interactive mode")
+	cmd.Flags().BoolVar(&flags.noColor, "no_color", false, "disable colored output")
 	cmd.Flags().DurationVar(&flags.timeout, "timeout", time.Second, "timeout per packet")
 	cmd.Flags().IPVar(&flags.local, "local", nil, "IP address to listen on")
 	cmd.Flags().StringVar(&flags.sciond, "sciond", sciond.DefaultSCIONDAddress, "SCIOND address")
@@ -175,25 +172,15 @@ the SCION path.`,
 		`choose the payload size such that the sent SCION packet including the SCION Header,
 SCMP echo header and payload are equal to the MTU of the path. This flag overrides the
 'payload_size' flag.`)
-	cmd.Flags().StringSliceVar(&flags.features, "features", nil,
-		"enable development features "+features{}.supported())
-
 	return cmd
 }
 
-func calcMaxPldSize(local, remote *snet.UDPAddr, mtu int, headerV2 bool) (int, error) {
-	overhead, err := calcPktSize(local, remote, 0, headerV2)
+func calcMaxPldSize(local, remote *snet.UDPAddr, mtu int) (int, error) {
+	overhead, err := ping.Size(local, remote, 0)
 	if err != nil {
 		return 0, err
 	}
 	return mtu - overhead, nil
-}
-
-func calcPktSize(local, remote *snet.UDPAddr, pldSize int, headerV2 bool) (int, error) {
-	if headerV2 {
-		return ping.Size(local, remote, pldSize)
-	}
-	return ping.SizeLegacy(local, remote, pldSize)
 }
 
 func pingSummary(stats ping.Stats, remote *snet.UDPAddr, run time.Duration) {

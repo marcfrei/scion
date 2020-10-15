@@ -6,19 +6,36 @@ EXTRA_NOSE_ARGS="-w python/ --with-xunit --xunit-file=logs/nosetests.xml"
 
 # BEGIN subcommand functions
 
+run_silently() {
+    tmpfile=$(mktemp /tmp/scion-silent.XXXXXX)
+    $@ >>$tmpfile 2>&1
+    if [ $? -ne 0 ]; then
+        cat $tmpfile
+        return 1
+    fi
+    return 0
+}
+
+cmd_bazel_remote() {
+    mkdir -p "$HOME/.cache/bazel/remote"
+    uid=$(id -u)
+    gid=$(id -g)
+    USER_ID="$uid" GROUP_ID="$gid" docker-compose -f bazel-remote.yml -p bazel_remote up -d
+}
+
 cmd_topo_clean() {
     set -e
     if is_docker_be; then
         echo "Shutting down dockerized topology..."
-        ./tools/quiet ./tools/dc down
+        ./tools/quiet ./tools/dc down || true
     else
         echo "Shutting down: $(./scion.sh stop)"
     fi
     supervisor/supervisor.sh shutdown
     stop_jaeger
     rm -rf traces/*
-    mkdir -p logs traces gen gen-cache
-    find gen gen-cache -mindepth 1 -maxdepth 1 -exec rm -r {} +
+    mkdir -p logs traces gen gen-cache gen-certs
+    find gen gen-cache gen-certs -mindepth 1 -maxdepth 1 -exec rm -r {} +
 }
 
 cmd_topology() {
@@ -33,15 +50,6 @@ cmd_topology() {
     python/topology/generator.py "$@"
     if is_docker_be; then
         ./tools/quiet ./tools/dc run utils_chowner
-    fi
-    if [ ! -e "gen-certs/tls.pem" -o ! -e "gen-certs/tls.key" ]; then
-        local old=$(umask)
-        echo "Generating TLS cert"
-        mkdir -p "gen-certs"
-        umask 0177
-        openssl genrsa -out "gen-certs/tls.key" 2048
-        umask "$old"
-        openssl req -new -x509 -key "gen-certs/tls.key" -out "gen-certs/tls.pem" -days 3650 -subj /CN=scion_def_srv
     fi
 }
 
@@ -58,20 +66,16 @@ cmd_run() {
     fi
     run_setup
     echo "Running the network..."
-    # Start dispatcher first, as it is requrired by the border routers.
     if is_docker_be; then
-        ./tools/quiet ./scion.sh mstart '*disp*' # for dockerized
-    else
-        ./tools/quiet ./scion.sh mstart '*dispatcher*' # for supervisor
+        docker-compose -f gen/scion-dc.yml -p scion build
+        docker-compose -f gen/scion-dc.yml -p scion up -d
+        return 0
     fi
+    # Start dispatcher first, as it is requrired by the border routers.
+    ./tools/quiet ./scion.sh mstart '*dispatcher*' # for supervisor
     # Start border routers before all other services to provide connectivity.
     ./tools/quiet ./scion.sh mstart '*br*'
-    # Run with docker-compose or supervisor
-    if is_docker_be; then
-        ./tools/quiet ./tools/dc start 'scion*'
-    else
-        ./tools/quiet ./supervisor/supervisor.sh start all
-    fi
+    ./tools/quiet ./supervisor/supervisor.sh start all
 }
 
 load_cust_keys() {
@@ -268,6 +272,7 @@ cmd_lint() {
     py_lint || ret=1
     go_lint || ret=1
     bazel_lint || ret=1
+    protobuf_lint || ret=1
     md_lint || ret=1
     return $ret
 }
@@ -291,13 +296,12 @@ go_lint() {
     local LOCAL_DIRS="$(find go/* -maxdepth 0 -type d | grep -v vendor)"
     # Find go files to lint, excluding generated code. For linelen and misspell.
     find go acceptance -type f -iname '*.go' \
+      -a '!' -ipath '*.pb.go' \
       -a '!' -ipath 'go/proto/structs.gen.go' \
       -a '!' -ipath 'go/proto/*.capnp.go' \
       -a '!' -ipath '*mock_*' \
       -a '!' -ipath 'go/lib/pathpol/sequence/*' > $TMPDIR/gofiles.list
-
-    lint_step "Building lint tools"
-    bazel build //:lint || return 1
+    run_silently bazel build //:lint || return 1
     tar -xf bazel-bin/lint.tar -C $TMPDIR || return 1
     local ret=0
     lint_step "impi"
@@ -305,34 +309,44 @@ go_lint() {
         --skip 'mock_' \
         --skip 'go/proto/.*\.capnp\.go' \
         --skip 'go/proto/structs.gen.go' \
-        --skip 'go/protobuf/.*\.pb\.go' \
+        --skip '.*\.pb\.go' \
         ./go/... || ret=1
     $TMPDIR/impi --local github.com/scionproto/scion --scheme stdThirdPartyLocal ./acceptance/... || ret=1
     lint_step "gofmt"
     # TODO(sustrik): At the moment there are no bazel rules for gofmt.
     # See: https://github.com/bazelbuild/rules_go/issues/511
     # Instead we'll just run the commands from Go SDK directly.
-    GOSDK=$(bazel info output_base)/external/go_sdk/bin
+    GOSDK=$(bazel info output_base 2>/dev/null)/external/go_sdk/bin
     out=$($GOSDK/gofmt -d -s $LOCAL_DIRS ./acceptance);
     if [ -n "$out" ]; then echo "$out"; ret=1; fi
     lint_step "linelen (lll)"
-    out=$($TMPDIR/lll -w 4 -l 100 --files -e '`comment:"|`ini:"|https?:|`sql:"|gorm:"|`json:"|`yaml:' < $TMPDIR/gofiles.list);
+    out=$($TMPDIR/lll -w 4 -l 100 --files -e '`comment:"|`ini:"|https?:|`sql:"|gorm:"|`json:"|`yaml:' < $TMPDIR/gofiles.list)
     if [ -n "$out" ]; then echo "$out"; ret=1; fi
     lint_step "misspell"
     xargs -a $TMPDIR/gofiles.list $TMPDIR/misspell -error || ret=1
     lint_step "ineffassign"
     $TMPDIR/ineffassign -exclude ineffassign.json go acceptance || ret=1
     lint_step "bazel"
-    make gazelle GAZELLE_MODE=diff || ret=1
+    run_silently make gazelle GAZELLE_MODE=diff || ret=1
     # Clean up the binaries
     rm -rf $TMPDIR
     return $ret
 }
 
+protobuf_lint() {
+    lint_header "protobuf"
+    local TMPDIR=$(mktemp -d /tmp/scion-lint.XXXXXXX)
+    run_silently bazel build //:lint || return 1
+    tar -xf bazel-bin/lint.tar -C $TMPDIR || return 1
+    local ret=0
+    lint_step "check files"
+    $TMPDIR/buf check lint || return 1
+}
+
 bazel_lint() {
     lint_header "bazel"
     local ret=0
-    bazel run //:buildifier_check || ret=1
+    run_silently bazel run //:buildifier_check || ret=1
     if [ $ret -ne 0 ]; then
         printf "\nto fix run:\nbazel run //:buildifier\n"
     fi
@@ -370,23 +384,6 @@ cmd_clean() {
     make -s clean
 }
 
-cmd_sciond() {
-    [ -n "$1" ] || { echo "ISD-AS argument required"; exit 1; }
-    # Convert the ISD-AS argument into an array, where the first element is the
-    # ISD, and the second is the AS.
-    IFS=- read -a ia <<< $1
-    ISD=${ia[0]:?No ISD provided}
-    AS=${ia[1]:?No AS provided}
-    ADDR=${2:-127.0.0.1}
-    GENDIR=gen/ISD${ISD}/AS${AS}/endhost
-    [ -d "$GENDIR" ] || { echo "Topology directory for $ISD-$AS doesn't exist: $GENDIR"; exit 1; }
-    APIADDR="/run/shm/sciond/${ISD}-${AS}.sock"
-    PYTHONPATH=python/:. python/bin/sciond --addr $ADDR --api-addr $APIADDR sd${ISD}-${AS} $GENDIR &
-    echo "Sciond running for $ISD-$AS (pid $!)"
-    wait
-    exit $?
-}
-
 traces_name() {
     local name=jaeger_read_badger_traces
     echo "$name"
@@ -404,7 +401,6 @@ cmd_traces() {
         -e BADGER_EPHEMERAL=false \
         -e BADGER_DIRECTORY_VALUE=/badger/data \
         -e BADGER_DIRECTORY_KEY=/badger/key \
-        -e BADGER_CONSISTENCY=true \
         -v "$trace_dir:/badger" \
         -p "$port":16686 \
         jaegertracing/all-in-one:1.16.0
@@ -428,10 +424,6 @@ cmd_help() {
 	        All arguments or options are passed to topology/generator.py
 	    $PROGRAM run [nobuild]
 	        Run network.
-	    $PROGRAM sciond ISD-AS [ADDR]
-	        Start sciond with provided ISD and AS parameters, and bind to ADDR.
-	        ISD-AS must be in file format (e.g., 1-ff00_0_133). If ADDR is not
-	        supplied, sciond will bind to 127.0.0.1.
 	    $PROGRAM mstart PROCESS
 	        Start multiple processes
 	    $PROGRAM stop
@@ -454,6 +446,8 @@ cmd_help() {
 	        Serve jaeger traces from the specified folder (default: traces/)
 	    $PROGRAM stop_traces
 	        Stop the jaeger container started during the traces command
+	    $PROGRAM bazel_remote
+	        Starts the bazel remote.
 	_EOF
 }
 # END subcommand functions
@@ -463,7 +457,7 @@ COMMAND="$1"
 shift
 
 case "$COMMAND" in
-    coverage|help|lint|run|mstart|mstatus|mstop|stop|status|test|topology|version|build|clean|sciond|traces|stop_traces|topo_clean)
+    coverage|help|lint|run|mstart|mstatus|mstop|stop|status|test|topology|version|build|clean|sciond|traces|stop_traces|topo_clean|bazel_remote)
         "cmd_$COMMAND" "$@" ;;
     start) cmd_run "$@" ;;
     *)  cmd_help; exit 1 ;;

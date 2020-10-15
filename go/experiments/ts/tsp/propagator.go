@@ -7,7 +7,6 @@ import (
 	"net"
 
 	"github.com/scionproto/scion/go/lib/addr"
-	"github.com/scionproto/scion/go/lib/l4"
 	"github.com/scionproto/scion/go/lib/snet"
 )
 
@@ -59,7 +58,8 @@ func (p *propagator) start() {
 			case r := <-p.propagateRequests:
 				propagatorLog.Printf("[%d] Received request %v: %v, %v\n", p.id, r, r.pkt, r.nextHop)
 				r.pkt.Source = snet.SCIONAddress{IA: p.localIA, Host: p.localHost}
-				r.pkt.PacketInfo.L4Header = &l4.UDP{SrcPort: p.localPort}
+				udpPayload := r.pkt.Payload.(snet.UDPPayload)
+				udpPayload.SrcPort = p.localPort
 				err := p.packetConn.WriteTo(r.pkt, r.nextHop)
 				if err != nil {
 					propagatorLog.Printf("[%d] Failed to write packet: %v\n", p.id, err)

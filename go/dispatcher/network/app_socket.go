@@ -33,8 +33,6 @@ import (
 type AppSocketServer struct {
 	Listener   *reliable.Listener
 	DispServer *dispatcher.Server
-	// HeaderV2 indicates whether the new header format is used.
-	HeaderV2 bool
 }
 
 func (s *AppSocketServer) Serve() error {
@@ -51,9 +49,8 @@ func (s *AppSocketServer) Serve() error {
 // Handle passes conn off to a per-connection state handler.
 func (h *AppSocketServer) Handle(conn net.PacketConn) {
 	ch := &AppConnHandler{
-		Conn:     conn,
-		Logger:   log.New("clientID", fmt.Sprintf("%p", conn)),
-		HeaderV2: h.HeaderV2,
+		Conn:   conn,
+		Logger: log.New("clientID", fmt.Sprintf("%p", conn)),
 	}
 	go func() {
 		defer log.HandlePanic()
@@ -67,13 +64,11 @@ type AppConnHandler struct {
 	Conn     net.PacketConn
 	DispConn *dispatcher.Conn
 	Logger   log.Logger
-	// HeaderV2 indicates whether the new header format is used.
-	HeaderV2 bool
 }
 
 func (h *AppConnHandler) Handle(appServer *dispatcher.Server) {
-	h.Logger.Info("Accepted new client")
-	defer h.Logger.Info("Closed client socket")
+	h.Logger.Debug("Accepted new client")
+	defer h.Logger.Debug("Closed client socket")
 	defer h.Conn.Close()
 
 	dispConn, err := h.doRegExchange(appServer)
@@ -134,7 +129,7 @@ func (h *AppConnHandler) logRegistration(ia addr.IA, public *net.UDPAddr, bind n
 	if svc != addr.SvcNone {
 		items = append(items, "svc", svc)
 	}
-	h.Logger.Info("Client registered address", items...)
+	h.Logger.Debug("Client registered address", items...)
 }
 
 func (h *AppConnHandler) recvRegistration(b common.RawBytes) (*reliable.Registration, error) {
@@ -169,16 +164,16 @@ func (h *AppConnHandler) sendConfirmation(b common.RawBytes, c *reliable.Confirm
 func (h *AppConnHandler) RunAppToNetDataplane() {
 
 	for {
-		pkt := respool.GetPacket(h.HeaderV2)
+		pkt := respool.GetPacket()
 		// XXX(scrye): we don't release the reference on error conditions, and
 		// let the GC take care of this situation as they should be fairly
 		// rare.
 
 		if err := pkt.DecodeFromReliableConn(h.Conn); err != nil {
 			if err == io.EOF {
-				h.Logger.Info("[app->network] EOF received from client")
+				h.Logger.Debug("[app->network] EOF received from client")
 			} else {
-				h.Logger.Error("[app->network] Client connection error", "err", err)
+				h.Logger.Info("[app->network] Client connection error", "err", err)
 				metrics.M.AppReadErrors().Inc()
 			}
 			return

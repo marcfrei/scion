@@ -18,6 +18,7 @@ import (
 	"context"
 
 	"github.com/scionproto/scion/go/lib/serrors"
+	cryptopb "github.com/scionproto/scion/go/pkg/proto/crypto"
 	"github.com/scionproto/scion/go/pkg/trust"
 	"github.com/scionproto/scion/go/proto"
 )
@@ -32,11 +33,22 @@ type RenewingSigner struct {
 	SignerGen SignerGen
 }
 
-// Sign signs the message with the latest available Signer.
-func (s RenewingSigner) Sign(ctx context.Context, msg []byte) (*proto.SignS, error) {
+// SignLegacy signs the message with the latest available Signer.
+func (s RenewingSigner) SignLegacy(ctx context.Context, msg []byte) (*proto.SignS, error) {
 	signer, err := s.SignerGen.Generate(ctx)
 	if err != nil {
 		return nil, serrors.WrapStr("failed to generate signer", err)
 	}
-	return signer.Sign(ctx, msg)
+	return signer.SignLegacy(ctx, msg)
+}
+
+// Sign signs the message with the latest available Signer.
+func (s RenewingSigner) Sign(ctx context.Context, msg []byte,
+	associatedData ...[]byte) (*cryptopb.SignedMessage, error) {
+	signer, err := s.SignerGen.Generate(ctx)
+
+	if err != nil {
+		return nil, serrors.WrapStr("failed to generate signer", err)
+	}
+	return signer.Sign(ctx, msg, associatedData...)
 }

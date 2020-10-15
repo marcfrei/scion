@@ -1,6 +1,7 @@
 load("@rules_pkg//:pkg.bzl", "pkg_tar")
-load("@io_bazel_rules_docker//container:container.bzl", "container_image")
-load("@package_bundle//file:packages.bzl", "packages")
+load("@io_bazel_rules_docker//container:container.bzl", "container_image", "container_layer")
+load("@packages_debian10//file:packages.bzl", "packages")
+load(":caps.bzl", "container_image_setcap")
 
 # Defines a common base image for all app images.
 def scion_app_base():
@@ -10,21 +11,16 @@ def scion_app_base():
         # we need setcap so that we can add network capabilities to apps
         packages["libcap2"],
         packages["libcap2-bin"],
-        # needed by su-exec
-        packages["libgcc1"],
-        packages["libstdc++6"],
     ]
 
-    # Install su-exec.
-    pkg_tar(
-        name = "app_base_files",
-        srcs = [
-            "@com_github_anapaya_su_exec//:su-exec",
+    container_layer(
+        name = "share_dirs_layer",
+        empty_dirs = [
+            "/share/cache",
+            "/share/data",
+            "/share/data/trustdb",
         ],
-        remap_paths = {
-            "": "sbin",
-        },
-        mode = "0755",
+        mode = "0777",
     )
 
     # Environment variables to set.
@@ -33,27 +29,35 @@ def scion_app_base():
     # Base for prod images.
     container_image(
         name = "app_base",
-        base = "@distroless//base:static_debian9",
+        base = "@static_debian10//image",
         env = env,
         debs = debs,
         tars = [
-            ":app_base_files",
             "//licenses:licenses",
         ],
+        layers = [":share_dirs_layer"],
         visibility = ["//visibility:public"],
     )
 
     # base for debug images.
     container_image(
         name = "app_base_debug",
-        base = "@distroless//base:debug_debian9",
+        base = "@debug_debian10//image",
         env = env,
         debs = debs,
         tars = [
-            ":app_base_files",
             "//licenses:licenses",
         ],
+        layers = [":share_dirs_layer"],
         visibility = ["//visibility:public"],
+    )
+
+    pkg_tar(
+        name = "delve_bin",
+        srcs = [
+            "@com_github_go_delve_delve//cmd/dlv",
+        ],
+        package_dir = "bin",
     )
 
 # Defines images for a specific SCION application.
@@ -63,33 +67,34 @@ def scion_app_base():
 #   appdir - the directory to deploy the binary to
 #   workdir - working directory
 #   entrypoint - a list of strings that add up to the command line
-#   stamp - whether to stamp the created images (default=True).
-def scion_app_images(name, binary, appdir, workdir, entrypoint, stamp = True):
+#   cmd - string or list of strings of commands to execute in the image.
+#   caps - capabilities to set on the binary
+def scion_app_images(name, binary, appdir, workdir, entrypoint, cmd = None, caps = None):
     pkg_tar(
-        name = name + "_docker_files",
+        name = "%s_docker_files" % name,
         srcs = [binary],
         package_dir = appdir,
         mode = "0755",
     )
-
-    container_image(
+    container_image_setcap(
         name = name + "_prod",
         repository = "scion",
         base = "//docker:app_base",
-        tars = [":" + name + "_docker_files"],
+        tars = [":%s_docker_files" % name],
         workdir = workdir,
-        entrypoint = ["/sbin/su-exec"] + entrypoint,
-        stamp = stamp,
-        visibility = ["//visibility:public"],
+        cmd = cmd,
+        entrypoint = entrypoint,
+        caps_binary = "%s/%s" % (appdir, name),
+        caps = caps,
     )
-
-    container_image(
+    container_image_setcap(
         name = name + "_debug",
         repository = "scion",
         base = "//docker:app_base_debug",
-        tars = [":" + name + "_docker_files"],
+        tars = [":%s_docker_files" % name, "//docker:delve_bin"],
         workdir = workdir,
+        cmd = cmd,
         entrypoint = entrypoint,
-        stamp = stamp,
-        visibility = ["//visibility:public"],
+        caps_binary = "%s/%s" % (appdir, name),
+        caps = caps,
     )

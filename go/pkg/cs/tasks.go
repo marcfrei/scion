@@ -22,16 +22,11 @@ import (
 
 	"github.com/scionproto/scion/go/cs/beacon"
 	"github.com/scionproto/scion/go/cs/beaconing"
-	beaconingcompat "github.com/scionproto/scion/go/cs/beaconing/compat"
 	"github.com/scionproto/scion/go/cs/ifstate"
-	"github.com/scionproto/scion/go/cs/keepalive"
-	"github.com/scionproto/scion/go/cs/onehop"
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
-	"github.com/scionproto/scion/go/lib/ctrl"
 	"github.com/scionproto/scion/go/lib/ctrl/path_mgmt"
-	"github.com/scionproto/scion/go/lib/infra"
-	"github.com/scionproto/scion/go/lib/infra/messenger"
+	"github.com/scionproto/scion/go/lib/ctrl/seg"
 	"github.com/scionproto/scion/go/lib/infra/modules/cleaner"
 	"github.com/scionproto/scion/go/lib/infra/modules/seghandler"
 	"github.com/scionproto/scion/go/lib/pathdb"
@@ -42,7 +37,6 @@ import (
 	"github.com/scionproto/scion/go/lib/spath"
 	"github.com/scionproto/scion/go/lib/topology"
 	"github.com/scionproto/scion/go/pkg/trust"
-	"github.com/scionproto/scion/go/proto"
 )
 
 // TasksConfig holds the necessary configuration to start the periodic tasks a
@@ -54,10 +48,10 @@ type TasksConfig struct {
 	TrustDB         trust.DB
 	PathDB          pathdb.PathDB
 	RevCache        revcache.RevCache
+	BeaconSender    beaconing.BeaconSender
+	SegmentRegister beaconing.RPC
 	BeaconStore     Store
-	Signer          ctrl.Signer
-	Msgr            infra.Messenger
-	AddressRewriter *messenger.AddressRewriter
+	Signer          seg.Signer
 	Inspector       trust.Inspector
 
 	MACGen       func() hash.Hash
@@ -69,7 +63,6 @@ type TasksConfig struct {
 	RegistrationInterval time.Duration
 
 	AllowIsdLoop bool
-	HeaderV2     bool
 }
 
 // Originator starts a periodic beacon origination task. For non-core ASes, no
@@ -83,21 +76,11 @@ func (t *TasksConfig) Originator() *periodic.Runner {
 		Extender: t.extender("originator", topo.IA(), topo.MTU(), func() spath.ExpTimeType {
 			return t.BeaconStore.MaxExpTime(beacon.PropPolicy)
 		}),
-		BeaconSender: &onehop.BeaconSender{
-			Sender: onehop.Sender{
-				Conn:     t.OneHopConn,
-				IA:       topo.IA(),
-				MAC:      t.MACGen(),
-				Addr:     t.Public,
-				HeaderV2: t.HeaderV2,
-			},
-			AddressRewriter:  t.AddressRewriter,
-			QUICBeaconSender: t.Msgr,
-		},
-		IA:     topo.IA(),
-		Intfs:  t.Intfs,
-		Signer: t.Signer,
-		Tick:   beaconing.NewTick(t.OriginationInterval),
+		BeaconSender: t.BeaconSender,
+		IA:           topo.IA(),
+		Intfs:        t.Intfs,
+		Signer:       t.Signer,
+		Tick:         beaconing.NewTick(t.OriginationInterval),
 	}
 	return periodic.Start(s, 500*time.Millisecond, t.OriginationInterval)
 }
@@ -109,17 +92,7 @@ func (t *TasksConfig) Propagator() *periodic.Runner {
 		Extender: t.extender("propagator", topo.IA(), topo.MTU(), func() spath.ExpTimeType {
 			return t.BeaconStore.MaxExpTime(beacon.PropPolicy)
 		}),
-		BeaconSender: &onehop.BeaconSender{
-			Sender: onehop.Sender{
-				Conn:     t.OneHopConn,
-				IA:       topo.IA(),
-				MAC:      t.MACGen(),
-				Addr:     t.Public,
-				HeaderV2: t.HeaderV2,
-			},
-			AddressRewriter:  t.AddressRewriter,
-			QUICBeaconSender: t.Msgr,
-		},
+		BeaconSender: t.BeaconSender,
 		Provider:     t.BeaconStore,
 		IA:           topo.IA(),
 		Signer:       t.Signer,
@@ -135,15 +108,15 @@ func (t *TasksConfig) Propagator() *periodic.Runner {
 func (t *TasksConfig) Registrars() []*periodic.Runner {
 	topo := t.TopoProvider.Get()
 	if topo.Core() {
-		return []*periodic.Runner{t.registrar(topo, proto.PathSegType_core, beacon.CoreRegPolicy)}
+		return []*periodic.Runner{t.registrar(topo, seg.TypeCore, beacon.CoreRegPolicy)}
 	}
 	return []*periodic.Runner{
-		t.registrar(topo, proto.PathSegType_down, beacon.DownRegPolicy),
-		t.registrar(topo, proto.PathSegType_up, beacon.UpRegPolicy),
+		t.registrar(topo, seg.TypeDown, beacon.DownRegPolicy),
+		t.registrar(topo, seg.TypeUp, beacon.UpRegPolicy),
 	}
 }
 
-func (t *TasksConfig) registrar(topo topology.Topology, segType proto.PathSegType,
+func (t *TasksConfig) registrar(topo topology.Topology, segType seg.Type,
 	policyType beacon.PolicyType) *periodic.Runner {
 
 	r := &beaconing.Registrar{
@@ -152,13 +125,17 @@ func (t *TasksConfig) registrar(topo topology.Topology, segType proto.PathSegTyp
 		}),
 		Provider: t.BeaconStore,
 		Store:    &seghandler.DefaultStorage{PathDB: t.PathDB},
-		RPC:      beaconingcompat.RPC{Messenger: t.Msgr},
+		RPC:      t.SegmentRegister,
 		IA:       topo.IA(),
 		Signer:   t.Signer,
 		Intfs:    t.Intfs,
 		Type:     segType,
-		Pather:   addrutil.NewPather(t.TopoProvider, t.HeaderV2),
-		Tick:     beaconing.NewTick(t.RegistrationInterval),
+		Pather: addrutil.Pather{
+			UnderlayNextHop: func(ifID uint16) (*net.UDPAddr, bool) {
+				return t.TopoProvider.Get().UnderlayNextHop2(common.IFIDType(ifID))
+			},
+		},
+		Tick: beaconing.NewTick(t.RegistrationInterval),
 	}
 	return periodic.Start(r, 500*time.Millisecond, t.RegistrationInterval)
 }
@@ -166,18 +143,6 @@ func (t *TasksConfig) registrar(topo topology.Topology, segType proto.PathSegTyp
 func (t *TasksConfig) extender(task string, ia addr.IA, mtu uint16,
 	maxExp func() spath.ExpTimeType) beaconing.Extender {
 
-	if !t.HeaderV2 {
-		return &beaconing.LegacyExtender{
-			IA:         ia,
-			Signer:     t.Signer,
-			MAC:        t.MACGen,
-			Intfs:      t.Intfs,
-			MTU:        mtu,
-			MaxExpTime: maxExp,
-			StaticInfo: t.StaticInfo,
-			Task:       task,
-		}
-	}
 	return &beaconing.DefaultExtender{
 		IA:         ia,
 		Signer:     t.Signer,
@@ -254,94 +219,6 @@ func (t *Tasks) Kill() {
 	t.Registrars = nil
 }
 
-// LegacyTasks keeps track of tasks running in legacy behavior.
-type LegacyTasks struct {
-	Keepalive *periodic.Runner
-	Revoker   *periodic.Runner
-}
-
-func StartLegacyTasks(cfg LegacyTasksConfig) *LegacyTasks {
-	return &LegacyTasks{
-		Keepalive: cfg.Keepalive(),
-		Revoker:   cfg.Revoker(),
-	}
-}
-
-func (t *LegacyTasks) Kill() {
-	if t == nil {
-		return
-	}
-	killRunners([]*periodic.Runner{
-		t.Keepalive,
-		t.Revoker,
-	})
-	t.Keepalive = nil
-	t.Revoker = nil
-}
-
-// LegacyTasksConfig holds the necessary configuration to start the periodic
-// tasks a CS is expected to run when running in header v1 mode. The tasks take
-// care of the keepalive and revocation mechanism. It will be replaced
-// by BR to BR health checking and be obsolete when switching to header v2.
-type LegacyTasksConfig struct {
-	Public      *net.UDPAddr
-	Intfs       *ifstate.Interfaces
-	OneHopConn  *snet.SCIONPacketConn
-	BeaconStore Store
-	Signer      ctrl.Signer
-	Msgr        infra.Messenger
-
-	MACGen       func() hash.Hash
-	TopoProvider topology.Provider
-
-	KeepaliveInterval    time.Duration
-	ExpiredCheckInterval time.Duration
-	RevTTL               time.Duration
-	RevOverlap           time.Duration
-
-	HeaderV2 bool
-}
-
-// Keepalive starts a keepalive sender.
-func (t LegacyTasksConfig) Keepalive() *periodic.Runner {
-	r := periodic.Start(
-		&keepalive.Sender{
-			Sender: &onehop.Sender{
-				Conn:     t.OneHopConn,
-				IA:       t.TopoProvider.Get().IA(),
-				MAC:      t.MACGen(),
-				Addr:     t.Public,
-				HeaderV2: t.HeaderV2,
-			},
-			Signer:       infra.NullSigner,
-			TopoProvider: t.TopoProvider,
-		},
-		t.KeepaliveInterval,
-		t.KeepaliveInterval,
-	)
-	r.TriggerRun()
-	return r
-}
-
-// Revoker starts a periodic tasks that checks if interfaces need to be revoked.
-func (t LegacyTasksConfig) Revoker() *periodic.Runner {
-	return periodic.Start(
-		ifstate.RevokerConf{
-			Intfs:        t.Intfs,
-			Msgr:         t.Msgr,
-			RevInserter:  t.BeaconStore,
-			Signer:       t.Signer,
-			TopoProvider: t.TopoProvider,
-			RevConfig: ifstate.RevConfig{
-				RevTTL:     t.RevTTL,
-				RevOverlap: t.RevOverlap,
-			},
-		}.New(),
-		t.ExpiredCheckInterval,
-		t.ExpiredCheckInterval,
-	)
-}
-
 func killRunners(runners []*periodic.Runner) {
 	for _, r := range runners {
 		r.Kill()
@@ -361,7 +238,7 @@ type Store interface {
 	// SegmentsToRegister returns a channel that provides all beacons to
 	// register at the time of the call. The selections is based on the
 	// configured propagation policy for the requested segment type.
-	SegmentsToRegister(ctx context.Context, segType proto.PathSegType) (
+	SegmentsToRegister(ctx context.Context, segType seg.Type) (
 		<-chan beacon.BeaconOrErr, error)
 	// InsertBeacon adds a verified beacon to the store, ignoring revocations.
 	InsertBeacon(ctx context.Context, beacon beacon.Beacon) (beacon.InsertStats, error)

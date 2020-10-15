@@ -21,11 +21,9 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"os/user"
 
 	"github.com/scionproto/scion/go/dispatcher/config"
 	"github.com/scionproto/scion/go/dispatcher/network"
-	"github.com/scionproto/scion/go/lib/common"
 	libconfig "github.com/scionproto/scion/go/lib/config"
 	"github.com/scionproto/scion/go/lib/env"
 	"github.com/scionproto/scion/go/lib/fatal"
@@ -63,11 +61,6 @@ func realMain() int {
 		return 1
 	}
 
-	if err := checkPerms(); err != nil {
-		log.Error("Permissions checks failed", "err", err)
-		return 1
-	}
-
 	if err := util.CreateParentDirs(cfg.Dispatcher.ApplicationSocket); err != nil {
 		log.Error("Creating directory tree for socket failed", "err", err)
 		return 1
@@ -80,7 +73,6 @@ func realMain() int {
 			cfg.Dispatcher.ApplicationSocket,
 			os.FileMode(cfg.Dispatcher.SocketFileMode),
 			cfg.Dispatcher.UnderlayPort,
-			cfg.Features.HeaderV2,
 		)
 		if err != nil {
 			fatal.Fatal(err)
@@ -88,9 +80,12 @@ func realMain() int {
 	}()
 
 	env.SetupEnv(nil)
+
+	// Start HTTP endpoints.
 	statusPages := service.StatusPages{
-		"info":   service.NewInfoHandler(),
-		"config": service.NewConfigHandler(cfg),
+		"info":      service.NewInfoHandler(),
+		"config":    service.NewConfigHandler(cfg),
+		"log/level": log.ConsoleLevel.ServeHTTP,
 	}
 	if err := statusPages.Register(http.DefaultServeMux, cfg.Dispatcher.ID); err != nil {
 		log.Error("registering status pages", "err", err)
@@ -130,7 +125,7 @@ func setupBasic() error {
 }
 
 func RunDispatcher(deleteSocketFlag bool, applicationSocket string, socketFileMode os.FileMode,
-	underlayPort int, headerV2 bool) error {
+	underlayPort int) error {
 
 	if deleteSocketFlag {
 		if err := deleteSocket(cfg.Dispatcher.ApplicationSocket); err != nil {
@@ -141,7 +136,6 @@ func RunDispatcher(deleteSocketFlag bool, applicationSocket string, socketFileMo
 		UnderlaySocket:    fmt.Sprintf(":%d", underlayPort),
 		ApplicationSocket: applicationSocket,
 		SocketFileMode:    socketFileMode,
-		HeaderV2:          headerV2,
 	}
 	log.Debug("Dispatcher starting", "appSocket", applicationSocket, "underlayPort", underlayPort)
 	return dispatcher.ListenAndServe()
@@ -165,15 +159,4 @@ func waitForTeardown() int {
 	case <-fatal.FatalChan():
 		return 1
 	}
-}
-
-func checkPerms() error {
-	u, err := user.Current()
-	if err != nil {
-		return common.NewBasicError("Error retrieving user", err)
-	}
-	if u.Uid == "0" && !cfg.Features.AllowRunAsRoot {
-		return serrors.New("Running as root is not allowed for security reasons")
-	}
-	return nil
 }

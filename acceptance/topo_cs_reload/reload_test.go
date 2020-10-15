@@ -52,21 +52,25 @@ func TestPSTopoReload(t *testing.T) {
 		"/topology_invalid_changed_port.json",
 	}
 	for _, invalidFile := range invalidFiles {
-		t.Logf("loading %s", invalidFile)
-		loadTopo(t, invalidFile)
-		checkTopology(t, origTopo)
+		t.Run(fmt.Sprintf("file %s", invalidFile), func(t *testing.T) {
+			t.Logf("loading %s", invalidFile)
+			loadTopo(t, invalidFile)
+			checkTopology(t, origTopo)
+		})
 	}
 
 	// now try to load a valid one.
-	loadTopo(t, "/topology_reload.json")
-	checkTopology(t, reloadTopo)
+	t.Run("valid", func(t *testing.T) {
+		loadTopo(t, "/topology_reload.json")
+		checkTopology(t, reloadTopo)
+	})
 }
 
 func setupTest(t *testing.T) {
 	// first load the docker images from bazel into the docker deamon, the
 	// tars are in the same folder as this test runs in bazel.
 	mustExec(t, "docker", "image", "load", "-i", "dispatcher.tar")
-	mustExec(t, "docker", "image", "load", "-i", "cs.tar")
+	mustExec(t, "docker", "image", "load", "-i", "control.tar")
 	// now start the docker containers
 	mustExec(t, "docker-compose", "-f", "docker-compose.yml", "up", "-d")
 	// wait a bit to make sure the containers are ready.
@@ -84,7 +88,7 @@ func teardownTest(t *testing.T) {
 	// collect logs
 	for service, file := range map[string]string{
 		"topo_cs_reload_dispatcher":  "disp.log",
-		"topo_cs_reload_control_srv": "cs.log",
+		"topo_cs_reload_control_srv": "control.log",
 	} {
 		cmd := exec.Command("docker-compose", "-f", "docker-compose.yml", "logs", "--no-color",
 			service)

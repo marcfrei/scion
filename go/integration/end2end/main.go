@@ -30,7 +30,6 @@ import (
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
 	libint "github.com/scionproto/scion/go/lib/integration"
-	"github.com/scionproto/scion/go/lib/l4"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/sciond"
 	"github.com/scionproto/scion/go/lib/serrors"
@@ -72,7 +71,8 @@ func realMain() int {
 		server{}.run()
 		return 0
 	}
-	return client{}.run()
+	c := client{}
+	return c.run()
 }
 
 func addFlags() {
@@ -98,15 +98,14 @@ type server struct {
 }
 
 func (s server) run() {
-	log.Info("Starting server", "ia", integration.Local.IA)
-	defer log.Info("Finished server", "ia", integration.Local.IA)
+	log.Info("Starting server", "isd_as", integration.Local.IA)
+	defer log.Info("Finished server", "isd_as", integration.Local.IA)
 
 	connFactory := &snet.DefaultPacketDispatcherService{
 		Dispatcher: reliable.NewDispatcher(""),
-		SCMPHandler: snet.NewSCMPHandler(
-			sciond.RevHandler{Connector: integration.SDConn()},
-		),
-		Version2: integration.HeaderV2,
+		SCMPHandler: snet.DefaultSCMPHandler{
+			RevocationHandler: sciond.RevHandler{Connector: integration.SDConn()},
+		},
 	}
 	conn, port, err := connFactory.Register(context.Background(), integration.Local.IA,
 		integration.Local.Host, addr.SvcNone)
@@ -127,21 +126,31 @@ func (s server) run() {
 			log.Error("Error reading packet", "err", err)
 			continue
 		}
-		if string(p.Payload.(common.RawBytes)) != ping+integration.Local.IA.String() {
-			integration.LogFatal("Received unexpected data", "data", p.Payload.(common.RawBytes))
+		udp, ok := p.Payload.(snet.UDPPayload)
+		if !ok {
+			log.Error("Unexpected payload received", "type", common.TypeOf(p.Payload))
+			continue
+		}
+		pld := string(udp.Payload)
+
+		p.Destination, p.Source = p.Source, p.Destination
+		p.Payload = snet.UDPPayload{
+			DstPort: udp.SrcPort,
+			SrcPort: udp.DstPort,
+			Payload: pongMessage(integration.Local.IA, p.Destination.IA),
+		}
+		if pld != ping+integration.Local.IA.String() {
+			integration.LogFatal("Received unexpected data", "data", pld)
 		}
 		log.Debug(fmt.Sprintf("Ping received from %s, sending pong.", p.Source))
-		// Send pong
-
+		// reverse path
 		if p.Path != nil {
 			if err := p.Path.Reverse(); err != nil {
 				log.Debug(fmt.Sprintf("Error reversing path, err = %v", err))
 				continue
 			}
 		}
-		p.Destination, p.Source = p.Source, p.Destination
-		p.L4Header.Reverse()
-		p.Payload = common.RawBytes(pongMessage(integration.Local.IA, p.Destination.IA))
+		// Send pong
 		if err := conn.WriteTo(&p, &ov); err != nil {
 			integration.LogFatal("Unable to send reply", "err", err)
 		}
@@ -153,19 +162,20 @@ type client struct {
 	conn   snet.PacketConn
 	port   uint16
 	sdConn sciond.Connector
+
+	errorPaths map[snet.PathFingerprint]struct{}
 }
 
-func (c client) run() int {
+func (c *client) run() int {
 	pair := fmt.Sprintf("%s -> %s", integration.Local.IA, remote.IA)
-	log.Info("Starting", "pair", pair, "header_v2", integration.HeaderV2)
+	log.Info("Starting", "pair", pair)
 	defer log.Info("Finished", "pair", pair)
 	defer integration.Done(integration.Local.IA, remote.IA)
 	connFactory := &snet.DefaultPacketDispatcherService{
 		Dispatcher: reliable.NewDispatcher(""),
-		SCMPHandler: snet.NewSCMPHandler(
-			sciond.RevHandler{Connector: integration.SDConn()},
-		),
-		Version2: integration.HeaderV2,
+		SCMPHandler: snet.DefaultSCMPHandler{
+			RevocationHandler: sciond.RevHandler{Connector: integration.SDConn()},
+		},
 	}
 
 	var err error
@@ -177,10 +187,11 @@ func (c client) run() int {
 	log.Debug("Send on", "local",
 		fmt.Sprintf("%v,[%v]:%d", integration.Local.IA, integration.Local.Host.IP, c.port))
 	c.sdConn = integration.SDConn()
+	c.errorPaths = make(map[snet.PathFingerprint]struct{})
 	return integration.AttemptRepeatedly("End2End", c.attemptRequest)
 }
 
-func (c client) attemptRequest(n int) bool {
+func (c *client) attemptRequest(n int) bool {
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), timeout.Duration)
 	defer cancel()
 	span, ctx := tracing.CtxWith(timeoutCtx, "run")
@@ -191,7 +202,8 @@ func (c client) attemptRequest(n int) bool {
 	logger := log.FromCtx(ctx)
 
 	// Send ping
-	if err := c.ping(ctx, n); err != nil {
+	path, err := c.ping(ctx, n)
+	if err != nil {
 		logger.Error("Could not send packet", "err", err)
 		ext.Error.Set(span, true)
 		return false
@@ -200,14 +212,18 @@ func (c client) attemptRequest(n int) bool {
 	if err := c.pong(ctx); err != nil {
 		logger.Debug("Error receiving pong", "err", err)
 		ext.Error.Set(span, true)
+		if path != nil {
+			c.errorPaths[snet.Fingerprint(path)] = struct{}{}
+		}
 		return false
 	}
 	return true
 }
 
-func (c client) ping(ctx context.Context, n int) error {
-	if err := c.getRemote(ctx, n); err != nil {
-		return err
+func (c *client) ping(ctx context.Context, n int) (snet.Path, error) {
+	path, err := c.getRemote(ctx, n)
+	if err != nil {
+		return nil, err
 	}
 	c.conn.SetWriteDeadline(getDeadline(ctx))
 	if remote.NextHop == nil {
@@ -219,52 +235,62 @@ func (c client) ping(ctx context.Context, n int) error {
 	var debugID [common.ExtnFirstLineLen]byte
 	// API guarantees return values are ok
 	_, _ = rand.Read(debugID[:])
-	return c.conn.WriteTo(
-		&snet.Packet{
-			PacketInfo: snet.PacketInfo{
-				Destination: snet.SCIONAddress{
-					IA:   remote.IA,
-					Host: addr.HostFromIP(remote.Host.IP),
-				},
-				Source: snet.SCIONAddress{
-					IA:   integration.Local.IA,
-					Host: addr.HostFromIP(integration.Local.Host.IP),
-				},
-				Path: remote.Path,
-				L4Header: &l4.UDP{
-					SrcPort: c.port,
-					DstPort: uint16(remote.Host.Port),
-				},
-				Payload: common.RawBytes(
-					pingMessage(remote.IA),
-				),
+	pkt := &snet.Packet{
+		PacketInfo: snet.PacketInfo{
+			Destination: snet.SCIONAddress{
+				IA:   remote.IA,
+				Host: addr.HostFromIP(remote.Host.IP),
+			},
+			Source: snet.SCIONAddress{
+				IA:   integration.Local.IA,
+				Host: addr.HostFromIP(integration.Local.Host.IP),
+			},
+			Path: remote.Path,
+			Payload: snet.UDPPayload{
+				SrcPort: c.port,
+				DstPort: uint16(remote.Host.Port),
+				Payload: pingMessage(remote.IA),
 			},
 		},
-		remote.NextHop,
-	)
+	}
+	log.Debug("sending ping", "attempt", n, "path", path)
+	return path, c.conn.WriteTo(pkt, remote.NextHop)
 }
 
-func (c client) getRemote(ctx context.Context, n int) error {
+func (c *client) getRemote(ctx context.Context, n int) (snet.Path, error) {
 	if remote.IA.Equal(integration.Local.IA) {
-		return nil
+		return nil, nil
 	}
 	// Get paths from sciond
 	paths, err := c.sdConn.Paths(ctx, remote.IA, integration.Local.IA,
-		sciond.PathReqFlags{Refresh: n != 0, PathCount: 1})
+		sciond.PathReqFlags{Refresh: n != 0})
 	if err != nil {
-		return common.NewBasicError("Error requesting paths", err)
+		return nil, common.NewBasicError("Error requesting paths", err)
 	}
-	if len(paths) == 0 {
-		return serrors.New("No path entries found")
+	// if all paths had an error, let's try them again.
+	if len(paths) <= len(c.errorPaths) {
+		c.errorPaths = make(map[snet.PathFingerprint]struct{})
 	}
-	path := paths[0]
+	// select first path that didn't error before.
+	var path snet.Path
+	for _, p := range paths {
+		if _, ok := c.errorPaths[snet.Fingerprint(p)]; ok {
+			continue
+		}
+		path = p
+		break
+	}
+	if path == nil {
+		return nil, serrors.New("no path found",
+			"candidates", len(paths), "errors", len(c.errorPaths))
+	}
 	// Extract forwarding path from sciond response
 	remote.Path = path.Path()
 	remote.NextHop = path.UnderlayNextHop()
-	return nil
+	return path, nil
 }
 
-func (c client) pong(ctx context.Context) error {
+func (c *client) pong(ctx context.Context) error {
 	c.conn.SetReadDeadline(getDeadline(ctx))
 	var p snet.Packet
 	var ov net.UDPAddr
@@ -272,9 +298,14 @@ func (c client) pong(ctx context.Context) error {
 		return common.NewBasicError("Error reading packet", err)
 	}
 	expected := pong + remote.IA.String() + integration.Local.IA.String()
-	if string(p.Payload.(common.RawBytes)) != expected {
-		return common.NewBasicError("Received unexpected data", nil, "data",
-			string(p.Payload.(common.RawBytes)), "expected", expected)
+	udp, ok := p.Payload.(snet.UDPPayload)
+	if !ok {
+		return serrors.New("unexpected payload received", "type", common.TypeOf(p.Payload))
+	}
+	pld := string(udp.Payload)
+	if pld != expected {
+		return serrors.New("unexpected data received",
+			"data", pld, "expected", expected)
 	}
 	log.Info("Received pong", "server", p.Source)
 	return nil

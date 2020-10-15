@@ -16,28 +16,19 @@ package segfetcher
 
 import (
 	"github.com/scionproto/scion/go/lib/addr"
-	"github.com/scionproto/scion/go/lib/ctrl/path_mgmt"
-	"github.com/scionproto/scion/go/proto"
+	"github.com/scionproto/scion/go/lib/ctrl/seg"
 )
 
 // Request represents a path or segment request.
 type Request struct {
 	Src     addr.IA
 	Dst     addr.IA
-	SegType proto.PathSegType
+	SegType seg.Type
 }
 
 // IsZero returns whether the request is empty.
 func (r Request) IsZero() bool {
 	return r.Src.IsZero() && r.Dst.IsZero()
-}
-
-// ToSegReq returns the request as a path_mgmt segment request.
-func (r Request) ToSegReq() *path_mgmt.SegReq {
-	return &path_mgmt.SegReq{
-		RawSrcIA: r.Src.IAInt(),
-		RawDstIA: r.Dst.IAInt(),
-	}
 }
 
 // Equal returns whether the two request refer to the same src/dst/type.

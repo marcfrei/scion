@@ -6,9 +6,9 @@ go_test(
     srcs = ["reload_test.go"],
     data = [
         "testdata/topology_reload.json",
+        ":daemon.tar",
         ":dispatcher.tar",
         ":docker-compose.yml",
-        ":sciond.tar",
         "//acceptance/topo_common:invalid_reloads",
         "//acceptance/topo_common:topology",
     ],
@@ -22,22 +22,22 @@ go_test(
 container_image(
     name = "dispatcher",
     base = "//docker:dispatcher_debug",
-    entrypoint = [
-        "/app/dispatcher",
+    cmd = [
         "--config",
         "/disp.toml",
     ],
+    entrypoint = ["/app/dispatcher"],
     files = ["testdata/disp.toml"],
 )
 
 container_image(
-    name = "sciond",
-    base = "//docker:sciond_debug",
-    entrypoint = [
-        "/app/sciond",
+    name = "daemon",
+    base = "//docker:daemon_debug",
+    cmd = [
         "--config",
         "/sd.toml",
     ],
+    entrypoint = ["/app/sciond"],
     files = [
         "testdata/sd.toml",
         "testdata/topology_reload.json",

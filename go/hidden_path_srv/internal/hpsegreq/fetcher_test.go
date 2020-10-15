@@ -16,6 +16,9 @@ package hpsegreq_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"errors"
 	"testing"
 
@@ -25,19 +28,17 @@ import (
 
 	"github.com/scionproto/scion/go/hidden_path_srv/internal/hiddenpathdb/adapter"
 	"github.com/scionproto/scion/go/hidden_path_srv/internal/hpsegreq"
+	"github.com/scionproto/scion/go/hidden_path_srv/internal/hpsegreq/mock_hpsegreq"
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/ctrl/path_mgmt"
 	"github.com/scionproto/scion/go/lib/ctrl/seg"
 	"github.com/scionproto/scion/go/lib/hiddenpath"
-	"github.com/scionproto/scion/go/lib/infra"
-	"github.com/scionproto/scion/go/lib/infra/mock_infra"
 	"github.com/scionproto/scion/go/lib/pathdb/mock_pathdb"
 	"github.com/scionproto/scion/go/lib/pathdb/query"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/xtest"
 	"github.com/scionproto/scion/go/lib/xtest/graph"
-	"github.com/scionproto/scion/go/proto"
 )
 
 var (
@@ -102,26 +103,26 @@ var (
 func newTestGraph(t *testing.T, ctrl *gomock.Controller) {
 	t.Helper()
 	g := graph.NewDefaultGraph(ctrl)
-	seg130_112 = markHidden(t, seg.NewMeta(
-		g.Beacon([]common.IFIDType{
+	seg130_112 = markHidden(t, &seg.Meta{
+		Segment: g.Beacon([]common.IFIDType{
 			graph.If_130_A_112_X,
 		}),
-		proto.PathSegType_down,
-	))
-	seg130_111_112 = markHidden(t, seg.NewMeta(
-		g.Beacon([]common.IFIDType{
+		Type: seg.TypeDown,
+	})
+	seg130_111_112 = markHidden(t, &seg.Meta{
+		Segment: g.Beacon([]common.IFIDType{
 			graph.If_130_B_111_A,
 			graph.If_111_A_112_X,
 		}),
-		proto.PathSegType_up,
-	))
-	seg120_111_112 = markHidden(t, seg.NewMeta(
-		g.Beacon([]common.IFIDType{
+		Type: seg.TypeUp,
+	})
+	seg120_111_112 = markHidden(t, &seg.Meta{
+		Segment: g.Beacon([]common.IFIDType{
 			graph.If_120_X_111_B,
 			graph.If_111_A_112_X,
 		}),
-		proto.PathSegType_core,
-	))
+		Type: seg.TypeCore,
+	})
 }
 
 func TestFetcher(t *testing.T) {
@@ -131,7 +132,7 @@ func TestFetcher(t *testing.T) {
 		peer  *snet.UDPAddr
 		err   error
 		res   []*path_mgmt.HPSegRecs
-		setup func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_infra.MockMessenger)
+		setup func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_hpsegreq.MockRPC)
 	}{
 		"only DB": {
 			req: &path_mgmt.HPSegReq{
@@ -147,7 +148,7 @@ func TestFetcher(t *testing.T) {
 					},
 				},
 			},
-			setup: func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_infra.MockMessenger) {
+			setup: func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_hpsegreq.MockRPC) {
 				res := query.Results{
 					&query.Result{Seg: seg130_112.Segment, Type: seg130_112.Type},
 				}
@@ -168,7 +169,7 @@ func TestFetcher(t *testing.T) {
 					},
 				},
 			},
-			setup: func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_infra.MockMessenger) {
+			setup: func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_hpsegreq.MockRPC) {
 				reply := &path_mgmt.HPSegReply{
 					Recs: []*path_mgmt.HPSegRecs{
 						{
@@ -180,8 +181,7 @@ func TestFetcher(t *testing.T) {
 					},
 				}
 				addr := &snet.SVCAddr{IA: ia115, SVC: addr.SvcHPS}
-				mockMsgr.EXPECT().GetHPSegs(gomock.Any(), gomock.Any(),
-					addr, gomock.Any()).Return(reply, nil)
+				mockMsgr.EXPECT().GetHPSegs(gomock.Any(), gomock.Any(), addr).Return(reply, nil)
 			},
 		},
 		"DB and remote": {
@@ -204,7 +204,7 @@ func TestFetcher(t *testing.T) {
 					},
 				},
 			},
-			setup: func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_infra.MockMessenger) {
+			setup: func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_hpsegreq.MockRPC) {
 				res := query.Results{
 					&query.Result{Seg: seg130_112.Segment, Type: seg130_112.Type},
 				}
@@ -220,8 +220,7 @@ func TestFetcher(t *testing.T) {
 				}
 				addr := &snet.SVCAddr{IA: ia115, SVC: addr.SvcHPS}
 				mockDB.EXPECT().Get(gomock.Any(), gomock.Any()).Return(res, nil)
-				mockMsgr.EXPECT().GetHPSegs(gomock.Any(), gomock.Any(), addr,
-					gomock.Any()).Return(reply, nil)
+				mockMsgr.EXPECT().GetHPSegs(gomock.Any(), gomock.Any(), addr).Return(reply, nil)
 			},
 		},
 		"two remote": {
@@ -244,7 +243,7 @@ func TestFetcher(t *testing.T) {
 					},
 				},
 			},
-			setup: func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_infra.MockMessenger) {
+			setup: func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_hpsegreq.MockRPC) {
 				reply2 := &path_mgmt.HPSegReply{
 					Recs: []*path_mgmt.HPSegRecs{
 						{
@@ -266,11 +265,9 @@ func TestFetcher(t *testing.T) {
 					},
 				}
 				addr2 := &snet.SVCAddr{IA: ia115, SVC: addr.SvcHPS}
-				mockMsgr.EXPECT().GetHPSegs(gomock.Any(), gomock.Any(), addr2,
-					gomock.Any()).Return(reply2, nil)
+				mockMsgr.EXPECT().GetHPSegs(gomock.Any(), gomock.Any(), addr2).Return(reply2, nil)
 				addr3 := &snet.SVCAddr{IA: ia114, SVC: addr.SvcHPS}
-				mockMsgr.EXPECT().GetHPSegs(gomock.Any(), gomock.Any(), addr3,
-					gomock.Any()).Return(reply3, nil)
+				mockMsgr.EXPECT().GetHPSegs(gomock.Any(), gomock.Any(), addr3).Return(reply3, nil)
 			},
 		},
 		"DB error": {
@@ -285,7 +282,7 @@ func TestFetcher(t *testing.T) {
 					Err:     "dummy",
 				},
 			},
-			setup: func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_infra.MockMessenger) {
+			setup: func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_hpsegreq.MockRPC) {
 				mockDB.EXPECT().Get(gomock.Any(), gomock.Any()).Return(nil, errors.New("dummy"))
 			},
 		},
@@ -301,10 +298,11 @@ func TestFetcher(t *testing.T) {
 					Err:     "dummy",
 				},
 			},
-			setup: func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_infra.MockMessenger) {
+			setup: func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_hpsegreq.MockRPC) {
 				addr := &snet.SVCAddr{IA: ia115, SVC: addr.SvcHPS}
-				mockMsgr.EXPECT().GetHPSegs(gomock.Any(), gomock.Any(),
-					addr, gomock.Any()).Return(nil, errors.New("dummy"))
+				mockMsgr.EXPECT().GetHPSegs(gomock.Any(), gomock.Any(), addr).Return(
+					nil, errors.New("dummy"),
+				)
 			},
 		},
 		"unknown group": {
@@ -314,7 +312,7 @@ func TestFetcher(t *testing.T) {
 			},
 			peer:  &snet.UDPAddr{IA: ia114},
 			err:   hpsegreq.ErrUnknownGroup,
-			setup: func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_infra.MockMessenger) {},
+			setup: func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_hpsegreq.MockRPC) {},
 		},
 		"not a reader": {
 			req: &path_mgmt.HPSegReq{
@@ -323,7 +321,7 @@ func TestFetcher(t *testing.T) {
 			},
 			peer:  &snet.UDPAddr{IA: ia114},
 			err:   hpsegreq.ErrNotReader,
-			setup: func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_infra.MockMessenger) {},
+			setup: func(mockDB *mock_pathdb.MockPathDB, mockMsgr *mock_hpsegreq.MockRPC) {},
 		},
 	}
 	for name, test := range tests {
@@ -339,7 +337,7 @@ func TestFetcher(t *testing.T) {
 				},
 			}
 			mockDB := mock_pathdb.NewMockPathDB(ctrl)
-			mockMsgr := mock_infra.NewMockMessenger(ctrl)
+			mockMsgr := mock_hpsegreq.NewMockRPC(ctrl)
 			f := hpsegreq.NewDefaultFetcher(groupInfo, mockMsgr, adapter.New(mockDB))
 			test.setup(mockDB, mockMsgr)
 			recs, err := f.Fetch(context.Background(), test.req, test.peer)
@@ -352,14 +350,21 @@ func TestFetcher(t *testing.T) {
 func markHidden(t *testing.T, m *seg.Meta) *seg.Meta {
 	t.Helper()
 	s := m.Segment
-	newSeg, err := seg.NewSeg(s.SData)
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
-	if s.MaxAEIdx() < 0 {
-		panic("Segment has no AS entries")
-	}
-	s.ASEntries[s.MaxAEIdx()].Exts.HiddenPathSeg = seg.NewHiddenPathSegExtn()
+	signer := graph.Signer{PrivateKey: priv}
+
+	newSeg, err := seg.CreateSegment(s.Info.Timestamp, s.Info.SegmentID)
+	require.NoError(t, err)
+	require.NotEmpty(t, s.ASEntries)
+	s.ASEntries[s.MaxIdx()].Extensions.HiddenPath.IsHidden = true
 	for _, entry := range s.ASEntries {
-		newSeg.AddASEntry(context.Background(), entry, infra.NullSigner)
+		err := newSeg.AddASEntry(context.Background(), entry, signer)
+		require.NoError(t, err)
 	}
-	return seg.NewMeta(newSeg, m.Type)
+	return &seg.Meta{
+		Segment: newSeg,
+		Type:    m.Type,
+	}
 }

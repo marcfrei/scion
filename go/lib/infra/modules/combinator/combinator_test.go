@@ -18,15 +18,19 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"testing"
 
 	"github.com/golang/mock/gomock"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/ctrl/seg"
+	"github.com/scionproto/scion/go/lib/slayers/path"
+	"github.com/scionproto/scion/go/lib/slayers/path/scion"
 	"github.com/scionproto/scion/go/lib/xtest"
 	"github.com/scionproto/scion/go/lib/xtest/graph"
 )
@@ -121,21 +125,19 @@ func TestMultiPeering(t *testing.T) {
 		},
 	}
 
-	Convey("main", t, func() {
-		for _, tc := range testCases {
-			Convey(tc.Name, func() {
-				result := Combine(tc.SrcIA, tc.DstIA, tc.Ups, tc.Cores, tc.Downs)
-				txtResult := writePaths(result)
-				if *update {
-					err := ioutil.WriteFile(xtest.ExpandPath(tc.FileName), txtResult.Bytes(), 0644)
-					xtest.FailOnErr(t, err)
-				}
-				expected, err := ioutil.ReadFile(xtest.ExpandPath(tc.FileName))
+	for _, tc := range testCases {
+		t.Run(tc.Name, func(t *testing.T) {
+			result := Combine(tc.SrcIA, tc.DstIA, tc.Ups, tc.Cores, tc.Downs)
+			txtResult := writePaths(result)
+			if *update {
+				err := ioutil.WriteFile(xtest.ExpandPath(tc.FileName), txtResult.Bytes(), 0644)
 				xtest.FailOnErr(t, err)
-				SoMsg("result", txtResult.String(), ShouldEqual, string(expected))
-			})
-		}
-	})
+			}
+			expected, err := ioutil.ReadFile(xtest.ExpandPath(tc.FileName))
+			xtest.FailOnErr(t, err)
+			assert.Equal(t, string(expected), txtResult.String())
+		})
+	}
 }
 
 func TestSameCoreParent(t *testing.T) {
@@ -544,11 +546,54 @@ func TestComputePath(t *testing.T) {
 	})
 }
 
-func writePaths(paths []*Path) *bytes.Buffer {
+func writePaths(paths []Path) *bytes.Buffer {
 	buffer := &bytes.Buffer{}
 	for i, p := range paths {
 		fmt.Fprintf(buffer, "Path #%d:\n", i)
-		p.writeTestString(buffer)
+		writeTestString(p, buffer)
 	}
 	return buffer
+}
+
+func writeTestString(p Path, w io.Writer) {
+	fmt.Fprintf(w, "  Weight: %d\n", p.Weight)
+
+	sp := scion.Decoded{}
+	if err := sp.DecodeFromBytes(p.SPath.Raw); err != nil {
+		panic(err)
+	}
+
+	fmt.Fprintln(w, "  Fields:")
+	hopIdx := 0
+	for i := range sp.InfoFields {
+		fmt.Fprintf(w, "    %s\n", fmtIF(sp.InfoFields[i]))
+		numHops := int(sp.PathMeta.SegLen[i])
+		for h := 0; h < numHops; h++ {
+			fmt.Fprintf(w, "      %s\n", fmtHF(sp.HopFields[hopIdx]))
+			hopIdx++
+		}
+	}
+	fmt.Fprintln(w, "  Interfaces:")
+	for _, pi := range p.Interfaces {
+		fmt.Fprintf(w, "    %v\n", pi)
+	}
+}
+
+func fmtIF(field *path.InfoField) string {
+	return fmt.Sprintf("IF %s%s",
+		flagPrint("C", field.ConsDir),
+		flagPrint("P", field.Peer))
+}
+
+func fmtHF(field *path.HopField) string {
+	return fmt.Sprintf("HF InIF=%d OutIF=%d",
+		field.ConsIngress,
+		field.ConsEgress)
+}
+
+func flagPrint(name string, b bool) string {
+	if b == false {
+		return "."
+	}
+	return name
 }

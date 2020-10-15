@@ -15,6 +15,7 @@
 package slayers_test
 
 import (
+	"encoding/binary"
 	"net"
 	"testing"
 
@@ -25,19 +26,181 @@ import (
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/slayers"
+	"github.com/scionproto/scion/go/lib/slayers/path"
+	"github.com/scionproto/scion/go/lib/slayers/path/empty"
+	"github.com/scionproto/scion/go/lib/slayers/path/onehop"
 	"github.com/scionproto/scion/go/lib/slayers/path/scion"
+	"github.com/scionproto/scion/go/lib/util"
 	"github.com/scionproto/scion/go/lib/xtest"
 )
 
 var (
 	ip6Addr = &net.IPAddr{IP: net.ParseIP("2001:db8::68")}
-	ip4Addr = &net.IPAddr{IP: net.ParseIP("10.0.0.100").To4()}
+	ip4Addr = &net.IPAddr{IP: net.ParseIP("10.0.0.100")}
 	svcAddr = addr.HostSVCFromString("Wildcard")
 	rawPath = []byte("\x00\x00\x20\x80\x00\x00\x01\x11\x00\x00\x01\x00\x01\x00\x02\x22\x00\x00" +
 		"\x01\x00\x00\x3f\x00\x01\x00\x00\x01\x02\x03\x04\x05\x06\x00\x3f\x00\x03\x00\x02\x01\x02" +
 		"\x03\x04\x05\x06\x00\x3f\x00\x00\x00\x02\x01\x02\x03\x04\x05\x06\x00\x3f\x00\x01\x00\x00" +
 		"\x01\x02\x03\x04\x05\x06")
 )
+
+func TestSCIONLayerString(t *testing.T) {
+	ia1, err := addr.IAFromString("1-ff00:0:1")
+	assert.NoError(t, err)
+	ia2, err := addr.IAFromString("1-ff00:0:2")
+	assert.NoError(t, err)
+	sc := &slayers.SCION{
+		TrafficClass: 226,
+		FlowID:       12345,
+		NextHdr:      common.L4UDP,
+		DstIA:        ia1,
+		SrcIA:        ia2,
+	}
+	if err := sc.SetDstAddr(&net.IPAddr{IP: net.ParseIP("1.2.3.4").To4()}); err != nil {
+		assert.NoError(t, err)
+	}
+	if err := sc.SetSrcAddr(&net.IPAddr{IP: net.ParseIP("5.6.7.8").To4()}); err != nil {
+		assert.NoError(t, err)
+	}
+
+	expectBegin := `` +
+		`SCION	{` +
+		`Contents=[] ` +
+		`Payload=[] ` +
+		`Version=0 ` +
+		`TrafficClass=226 ` +
+		`FlowID=12345 ` +
+		`NextHdr=UDP ` +
+		`HdrLen=0 ` +
+		`PayloadLen=0 `
+	expectMiddle := `` +
+		`DstAddrType=0 ` +
+		`DstAddrLen=0 ` +
+		`SrcAddrType=0 ` +
+		`SrcAddrLen=0 ` +
+		`DstIA=1-ff00:0:1 ` +
+		`SrcIA=1-ff00:0:2 ` +
+		`RawDstAddr=[1, 2, 3, 4] ` +
+		`RawSrcAddr=[5, 6, 7, 8] `
+	expectEnd := `}`
+
+	testCases := map[string]struct {
+		pathType slayers.PathType
+		path     slayers.Path
+		expect   string
+	}{
+		"empty": {
+			pathType: slayers.PathTypeEmpty,
+			path:     empty.Path{},
+			expect:   expectBegin + `PathType=Empty (0) ` + expectMiddle + `Path={}` + expectEnd,
+		},
+		"scion": {
+			pathType: slayers.PathTypeSCION,
+			path: &scion.Decoded{
+				Base: scion.Base{
+					PathMeta: scion.MetaHdr{
+						CurrINF: 5,
+						CurrHF:  6,
+						SegLen:  [3]uint8{1, 2, 3},
+					},
+					NumINF:  10,
+					NumHops: 11,
+				},
+				InfoFields: []*path.InfoField{
+					{
+						Peer:  true,
+						SegID: 222,
+					},
+				},
+				HopFields: []*path.HopField{
+					{
+						IngressRouterAlert: true,
+						EgressRouterAlert:  false,
+						ExpTime:            63,
+						ConsIngress:        4,
+						ConsEgress:         5,
+						Mac:                []byte{6, 7, 8},
+					},
+				},
+			},
+			expect: expectBegin + `PathType=SCION (1) ` + expectMiddle +
+				`Path={ ` +
+				`PathMeta={` +
+				`CurrInf: 5, ` +
+				`CurrHF: 6, ` +
+				`SegLen: [1 2 3]} ` +
+				`NumINF=10 ` +
+				`NumHops=11 ` +
+				`InfoFields=[{` +
+				`Peer: true, ` +
+				`ConsDir: false, ` +
+				`SegID: 222, ` +
+				`Timestamp: 1970-01-01 00:00:00+0000` +
+				`}] HopFields=[{` +
+				`IngressRouterAlert=true ` +
+				`EgressRouterAlert=false ` +
+				`ExpTime=63 ` +
+				`ConsIngress=4 ` +
+				`ConsEgress=5 ` +
+				`Mac=[6, 7, 8]` +
+				`}]}` + expectEnd,
+		},
+		"onehop": {
+			pathType: slayers.PathTypeOneHop,
+			path: &onehop.Path{
+				Info: path.InfoField{
+					ConsDir:   true,
+					SegID:     34,
+					Timestamp: 1000,
+				},
+				FirstHop: path.HopField{
+					ConsIngress: 5,
+					ConsEgress:  6,
+					ExpTime:     63,
+					Mac:         []byte{1, 2, 3},
+				},
+				SecondHop: path.HopField{
+					ConsIngress: 2,
+					ConsEgress:  3,
+					ExpTime:     63,
+					Mac:         []byte{7, 8, 9},
+				},
+			},
+			expect: expectBegin + `PathType=OneHop (2) ` + expectMiddle +
+				`Path={ ` +
+				`Info={ ` +
+				`Peer=false ` +
+				`ConsDir=true ` +
+				`SegID=34 ` +
+				`Timestamp=1000` +
+				`} FirstHop={ ` +
+				`IngressRouterAlert=false ` +
+				`EgressRouterAlert=false ` +
+				`ExpTime=63 ` +
+				`ConsIngress=5 ` +
+				`ConsEgress=6 ` +
+				`Mac=[1, 2, 3]` +
+				`} SecondHop={ ` +
+				`IngressRouterAlert=false ` +
+				`EgressRouterAlert=false ` +
+				`ExpTime=63 ` +
+				`ConsIngress=2 ` +
+				`ConsEgress=3 ` +
+				`Mac=[7, 8, 9]` +
+				`}}` + expectEnd,
+		},
+	}
+
+	for name, tc := range testCases {
+		name, tc := name, tc
+		t.Run(name, func(t *testing.T) {
+			sc.PathType = tc.pathType
+			sc.Path = tc.path
+			got := gopacket.LayerString(sc)
+			assert.Equal(t, tc.expect, got)
+		})
+	}
+}
 
 func TestSCIONSerializeDecode(t *testing.T) {
 	want := prepPacket(t, common.L4UDP)
@@ -92,21 +255,18 @@ func TestSetAndGetAddr(t *testing.T) {
 			assert.NoError(t, err)
 			gotDst, err := s.DstAddr()
 			assert.NoError(t, err)
-			assert.Equal(t, tc.srcAddr, gotSrc)
-			assert.Equal(t, tc.dstAddr, gotDst)
+
+			equalAddr := func(t *testing.T, expected, actual net.Addr) {
+				if _, ok := expected.(*net.IPAddr); !ok {
+					assert.Equal(t, expected, actual)
+					return
+				}
+				assert.True(t, expected.(*net.IPAddr).IP.Equal(actual.(*net.IPAddr).IP))
+			}
+			equalAddr(t, tc.srcAddr, gotSrc)
+			equalAddr(t, tc.dstAddr, gotDst)
 		})
 	}
-
-	s := &slayers.SCION{}
-	assert.NoError(t, s.SetDstAddr(ip6Addr), "SetDstAddr()")
-	assert.NoError(t, s.SetSrcAddr(ip4Addr), "SetSrcAddr()")
-
-	dst, err := s.DstAddr()
-	assert.NoError(t, err, "DstAddr()")
-	src, err := s.SrcAddr()
-	assert.NoError(t, err, "SrcAddr()")
-	assert.Equal(t, ip6Addr, dst, "dstAddr")
-	assert.Equal(t, ip4Addr, src, "srcAddr")
 }
 
 func TestPackAddr(t *testing.T) {
@@ -121,7 +281,7 @@ func TestPackAddr(t *testing.T) {
 			addr:      ip4Addr,
 			addrType:  slayers.T4Ip,
 			addrLen:   slayers.AddrLen4,
-			rawAddr:   []byte(ip4Addr.IP),
+			rawAddr:   []byte(ip4Addr.IP.To4()),
 			errorFunc: assert.NoError,
 		},
 		"pack IPv6": {
@@ -275,4 +435,99 @@ func prepRawPacket(t testing.TB) []byte {
 	buffer := gopacket.NewSerializeBuffer()
 	spkt.SerializeTo(buffer, gopacket.SerializeOptions{FixLengths: true})
 	return buffer.Bytes()
+}
+
+func TestSCIONComputeChecksum(t *testing.T) {
+	testCases := map[string]struct {
+		Header     func(t *testing.T) *slayers.SCION
+		UpperLayer []byte
+		Protocol   uint8
+		Checksum   uint16
+	}{
+		"IPv4/IPv4": {
+			Header: func(t *testing.T) *slayers.SCION {
+				s := &slayers.SCION{
+					SrcIA: xtest.MustParseIA("1-ff00:0:110"),
+					DstIA: xtest.MustParseIA("1-ff00:0:112"),
+				}
+				err := s.SetSrcAddr(&net.IPAddr{IP: net.ParseIP("174.16.4.1").To4()})
+				require.NoError(t, err)
+				err = s.SetDstAddr(&net.IPAddr{IP: net.ParseIP("172.16.4.2").To4()})
+				require.NoError(t, err)
+				return s
+			},
+			UpperLayer: xtest.MustParseHexString("aabbccdd"),
+			Protocol:   1,
+			Checksum:   0x2615,
+		},
+		"IPv4/IPv6": {
+			Header: func(t *testing.T) *slayers.SCION {
+				s := &slayers.SCION{
+					SrcIA: xtest.MustParseIA("1-ff00:0:110"),
+					DstIA: xtest.MustParseIA("1-ff00:0:112"),
+				}
+				err := s.SetSrcAddr(&net.IPAddr{IP: net.ParseIP("174.16.4.1").To4()})
+				require.NoError(t, err)
+				err = s.SetDstAddr(&net.IPAddr{IP: net.ParseIP("dead::beef")})
+				require.NoError(t, err)
+				return s
+			},
+			UpperLayer: xtest.MustParseHexString("aabbccdd"),
+			Protocol:   17,
+			Checksum:   0x387a,
+		},
+		"IPv4/SVC": {
+			Header: func(t *testing.T) *slayers.SCION {
+				s := &slayers.SCION{
+					SrcIA: xtest.MustParseIA("1-ff00:0:110"),
+					DstIA: xtest.MustParseIA("1-ff00:0:112"),
+				}
+				err := s.SetSrcAddr(&net.IPAddr{IP: net.ParseIP("174.16.4.1").To4()})
+				require.NoError(t, err)
+				err = s.SetDstAddr(addr.SvcCS)
+				require.NoError(t, err)
+				return s
+			},
+			UpperLayer: xtest.MustParseHexString("aabbccdd"),
+			Protocol:   223,
+			Checksum:   0xd547,
+		},
+	}
+
+	for name, tc := range testCases {
+		name, tc := name, tc
+		t.Run(name, func(t *testing.T) {
+			s := tc.Header(t)
+
+			// Prepend checksum field for testing.
+			ul := append([]byte{0, 0}, tc.UpperLayer...)
+
+			// Reference checksum
+			reference := util.Checksum(pseudoHeader(t, s, len(ul), tc.Protocol), ul)
+
+			// Compute checksum
+			csum, err := s.ComputeChecksum(ul, tc.Protocol)
+			require.NoError(t, err)
+			assert.Equal(t, tc.Checksum, csum)
+			assert.Equal(t, reference, csum)
+
+			// The checksum over the packet with the checksum field set should
+			// equal 0.
+			binary.BigEndian.PutUint16(ul, csum)
+			csum, err = s.ComputeChecksum(ul, tc.Protocol)
+			require.NoError(t, err)
+			assert.Equal(t, uint16(0), csum)
+		})
+	}
+}
+
+func pseudoHeader(t *testing.T, s *slayers.SCION, upperLayerLength int, protocol uint8) []byte {
+	addrHdrLen := s.AddrHdrLen()
+	pseudo := make([]byte, addrHdrLen+4+4)
+	require.NoError(t, s.SerializeAddrHdr(pseudo))
+	offset := addrHdrLen
+	binary.BigEndian.PutUint32(pseudo[offset:], uint32(upperLayerLength))
+	offset += 4
+	binary.BigEndian.PutUint32(pseudo[offset:], uint32(protocol))
+	return pseudo
 }

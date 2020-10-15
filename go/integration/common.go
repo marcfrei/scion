@@ -34,6 +34,7 @@ import (
 	"github.com/scionproto/scion/go/lib/sciond"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/sock/reliable"
+	"github.com/scionproto/scion/go/pkg/app/feature"
 )
 
 const (
@@ -49,7 +50,7 @@ var (
 	sciondAddr string
 	Attempts   int
 	logConsole string
-	HeaderV2   bool
+	features   string
 )
 
 func Setup() {
@@ -64,7 +65,8 @@ func addFlags() {
 	flag.StringVar(&sciondAddr, "sciond", sciond.DefaultSCIONDAddress, "SCIOND address")
 	flag.IntVar(&Attempts, "attempts", 1, "Number of attempts before giving up")
 	flag.StringVar(&logConsole, "log.console", "info", "Console logging level: debug|info|error")
-	flag.BoolVar(&HeaderV2, "header_v2", false, "Use the new header format.")
+	flag.StringVar(&features, "features", "",
+		fmt.Sprintf("enable development features (%v)", feature.String(&feature.Default{}, "|")))
 }
 
 // InitTracer initializes the global tracer and returns a closer function.
@@ -122,12 +124,10 @@ func InitNetwork() *snet.SCIONNetwork {
 		LocalIA: Local.IA,
 		Dispatcher: &snet.DefaultPacketDispatcherService{
 			Dispatcher: ds,
-			SCMPHandler: snet.NewSCMPHandler(
-				sciond.RevHandler{Connector: sciondConn},
-			),
-			Version2: HeaderV2,
+			SCMPHandler: snet.DefaultSCMPHandler{
+				RevocationHandler: sciond.RevHandler{Connector: sciondConn},
+			},
 		},
-		Version2: HeaderV2,
 	}
 	log.Debug("SCION network successfully initialized")
 	return n

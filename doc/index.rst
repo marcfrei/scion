@@ -17,9 +17,11 @@ is a good place to start.
    BeaconExtensions
    PathService
    PathPolicy
-   HiddenPaths
+   hidden-paths
+   EPIC
    ColibriService
-   Metrics
+   uri
+   grpc
 
 
 Indices and tables

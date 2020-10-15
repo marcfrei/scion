@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/x509"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/opentracing/opentracing-go"
@@ -37,6 +38,14 @@ var (
 	errNotFound = serrors.New("not found")
 	errInactive = serrors.New("inactive")
 )
+
+// Fetcher fetches trust material from a remote.
+type Fetcher interface {
+	// Chains fetches certificate chains that match the query from the remote.
+	Chains(ctx context.Context, req ChainQuery, server net.Addr) ([][]*x509.Certificate, error)
+	// TRC fetches a specific TRC from the remote.
+	TRC(ctx context.Context, id cppki.TRCID, server net.Addr) (cppki.SignedTRC, error)
+}
 
 // FetchingProvider provides crypto material. The fetching provider is capable
 // of fetching missing crypto material over the network.
@@ -74,19 +83,19 @@ func (p FetchingProvider) GetChains(ctx context.Context, query ChainQuery,
 	span.SetTag("query.date", util.TimeToCompact(query.Date))
 
 	logger := log.FromCtx(ctx)
-	logger.Debug("[trust:Provider] Getting chains",
+	logger.Debug("Getting chains",
 		"isd_as", query.IA,
 		"date", util.TimeToCompact(query.Date),
 		"subject_key_id", fmt.Sprintf("%x", query.SubjectKeyID))
 
 	if query.Date.IsZero() {
 		query.Date = time.Now()
-		logger.Debug("[trust:Provider] Set date for chain request with zero time")
+		logger.Debug("Set date for chain request with zero time")
 	}
 
 	chains, err := p.DB.Chains(ctx, query)
 	if err != nil {
-		logger.Info("[trust:Provider] Failed to get chain from database",
+		logger.Info("Failed to get chain from database",
 			"query", query, "err", err)
 		setProviderMetric(span, l.WithResult(metrics.ErrDB), err)
 		return nil, serrors.WrapStr("fetching chains from database", err)
@@ -99,7 +108,7 @@ func (p FetchingProvider) GetChains(ctx context.Context, query ChainQuery,
 
 	trcs, result, err := activeTRCs(ctx, p.DB, query.IA.I)
 	if err != nil {
-		logger.Info("[trust:Provider] Failed to get TRC for chain verification",
+		logger.Info("Failed to get TRC for chain verification",
 			"isd", query.IA.I, "err", err)
 		setProviderMetric(span, l.WithResult(result), err)
 		return nil, serrors.WrapStr("fetching active TRCs from database", err)
@@ -170,7 +179,7 @@ func (p FetchingProvider) NotifyTRC(ctx context.Context, id cppki.TRCID, opts ..
 	span.SetTag("trc_id.serial", id.Serial)
 
 	logger := log.FromCtx(ctx)
-	logger.Debug("[trust:Provider] TRC notify", "id", id)
+	logger.Debug("TRC notify", "id", id)
 
 	trc, err := p.DB.SignedTRC(ctx, cppki.TRCID{
 		ISD:    id.ISD,

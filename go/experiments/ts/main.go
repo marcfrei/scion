@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/scionproto/scion/go/lib/addr"
-	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/sciond"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/sock/reliable"
@@ -66,7 +65,9 @@ func newSciondConnector(addr string, ctx context.Context) sciond.Connector {
 func newPacketDispatcher(c sciond.Connector) snet.PacketDispatcherService {
 	return &snet.DefaultPacketDispatcherService{
 		Dispatcher: reconnect.NewDispatcherService(reliable.NewDispatcher("")),
-		SCMPHandler: snet.NewSCMPHandler(sciond.RevHandler{Connector: c}),
+		SCMPHandler: snet.DefaultSCMPHandler{
+			RevocationHandler: sciond.RevHandler{Connector: c},
+		},
 	}
 }
 
@@ -83,9 +84,9 @@ func newPacket(localIA addr.IA, remoteIA addr.IA, path snet.Path,
 				Host: addr.SvcTS | addr.SVCMcast,
 			},
 			Path: dpPath,
-			Payload: common.RawBytes(
-				[]byte(payload.String()),
-			),
+			Payload: snet.UDPPayload{
+				Payload: []byte(payload.String()),
+			},
 		},
 	}
 }

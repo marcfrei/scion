@@ -1,3 +1,5 @@
+.. _scmp-specification:
+
 ******************
 SCMP Specification
 ******************
@@ -112,10 +114,7 @@ Checksum Calculation
 The checksum is the 16-bit one's complement of the one's complement sum of the
 entire SCMP message, starting with the SCMP message type field, and prepended
 with a "pseudo-header" consisting of the SCION address header and the layer-4
-protocol type.
-
-TODO(roosd): Define pseudo header similar to
-             https://tools.ietf.org/html/rfc2460#section-8.1
+protocol type as defined in :ref:`pseudo-header-upper-layer-checksum`.
 
 Processing Rules
 ----------------
@@ -528,7 +527,7 @@ Traceroute Request
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     |     Type      |     Code      |          Checksum             |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |           Identifier          |          reserved             |
+    |           Identifier          |        Sequence Number        |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     |              ISD              |                               |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+         AS                    +
@@ -547,6 +546,8 @@ Traceroute Request
 | Code         | 0                                                             |
 +--------------+---------------------------------------------------------------+
 | Identifier   | A 16-bit identifier to aid matching replies with requests     |
++--------------+---------------------------------------------------------------+
+| Sequence Nr. | A 16-bit sequence number to aid matching replies with request |
 +--------------+---------------------------------------------------------------+
 | ISD          | Place holder set to zero by SCMP sender                       |
 +--------------+---------------------------------------------------------------+
@@ -571,7 +572,7 @@ Traceroute Reply
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     |     Type      |     Code      |          Checksum             |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |           Identifier          |          reserved             |
+    |           Identifier          |        Sequence Number        |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     |              ISD              |                               |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+         AS                    +
@@ -590,6 +591,8 @@ Traceroute Reply
 | Code         | 0                                                             |
 +--------------+---------------------------------------------------------------+
 | Identifier   | The identifier set in the Traceroute Request                  |
++--------------+---------------------------------------------------------------+
+| Sequence Nr. | The sequence number of the Tracroute Request                  |
 +--------------+---------------------------------------------------------------+
 | ISD          | The 16-bit ISD identifier of the SCMP originator              |
 +--------------+---------------------------------------------------------------+

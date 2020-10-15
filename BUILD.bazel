@@ -10,16 +10,14 @@ gazelle(name = "gazelle")
 pkg_tar(
     name = "scion",
     srcs = [
-        "//go/border",
         "//go/cs",
         "//go/dispatcher",
+        "//go/posix-router",
         "//go/scion",
         "//go/scion-pki",
         "//go/sciond",
         "//go/sig",
         "//go/tools/pathdb_dump",
-        "//go/tools/scmp",
-        "//go/tools/showpaths",
     ],
     mode = "0755",
     package_dir = "",
@@ -31,14 +29,12 @@ pkg_tar(
     name = "scion-ci",
     srcs = [
         "//go/acceptance/sig_ping_acceptance",
-        "//go/border/braccept",
-        "//go/examples/pingpong",
-        "//go/examples/pingpong/pp_integration",
+        "//go/integration/braccept",
         "//go/integration/end2end",
         "//go/integration/end2end_integration",
+        "//go/integration/scion_integration",
         "//go/lib/xtest/graphupdater",
         "//go/tools/buildkite_log_downloader",
-        "//go/tools/scmp/scmp_integration",
         "//go/tools/udpproxy",
     ],
     mode = "0755",
@@ -59,6 +55,7 @@ pkg_tar(
 pkg_tar(
     name = "lint",
     srcs = [
+        "@buf_bin//file:buf",
         "@com_github_client9_misspell//cmd/misspell",
         "@com_github_jeanmertz_lll//cmd/lll",
         "@com_github_oncilla_ineffassign//:ineffassign",

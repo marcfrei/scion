@@ -10,7 +10,6 @@ import (
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/sciond"
 	"github.com/scionproto/scion/go/lib/snet"
-	"github.com/scionproto/scion/go/proto"
 )
 
 type PathInfo struct {
@@ -57,18 +56,18 @@ func StartPather(c sciond.Connector, ctx context.Context) (<-chan PathInfo, erro
 					}
 				}
 
-				svcInfoReply, err := c.SVCInfo(ctx,
-					[]proto.ServiceType{proto.ServiceType_ts})
-				if err != nil {
-					patherLog.Printf("Failed to lookup local TS service info: %v\n", err)
-				}
+				// svcInfoReply, err := c.SVCInfo(ctx,
+				// 	[]proto.ServiceType{proto.ServiceType_ts})
+				// if err != nil {
+				// 	patherLog.Printf("Failed to lookup local TS service info: %v\n", err)
+				// }
 				localTSHosts := make(map[string]net.IP)
-				if svcInfoReply != nil {
-					for _, i := range svcInfoReply.Entries[0].HostInfos {
-						ip := i.Host().IP()
-						localTSHosts[ip.String()] = ip
-					}
-				}
+				// if svcInfoReply != nil {
+				// 	for _, i := range svcInfoReply.Entries[0].HostInfos {
+				// 		ip := i.Host().IP()
+				// 		localTSHosts[ip.String()] = ip
+				// 	}
+				// }
 
 				patherLog.Printf("Reachable local time services:\n")
 				for localTSHost := range localTSHosts {

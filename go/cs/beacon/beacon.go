@@ -15,6 +15,8 @@
 package beacon
 
 import (
+	"fmt"
+
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/ctrl/path_mgmt"
@@ -55,8 +57,12 @@ func (b Beacon) Diversity(other Beacon) int {
 	return diff
 }
 
-func link(entry *seg.ASEntry) (addr.IA, common.IFIDType) {
-	return entry.IA(), common.IFIDType(entry.HopEntries[0].HopField.ConsIngress)
+func (b Beacon) String() string {
+	return fmt.Sprintf("Ingress: %d Segment: [ %s ]", b.InIfId, b.Segment)
+}
+
+func link(entry seg.ASEntry) (addr.IA, common.IFIDType) {
+	return entry.Local, common.IFIDType(entry.HopEntry.HopField.ConsIngress)
 }
 
 // BeaconOrErr contains a read-only beacon or an error.

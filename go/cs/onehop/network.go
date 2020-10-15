@@ -19,7 +19,6 @@ import (
 	"net"
 
 	"github.com/scionproto/scion/go/lib/addr"
-	"github.com/scionproto/scion/go/lib/layers"
 	"github.com/scionproto/scion/go/lib/snet"
 )
 
@@ -55,8 +54,6 @@ func (c *ohpPacketConn) WriteTo(pkt *snet.Packet, ov *net.UDPAddr) error {
 				Destination: pkt.Destination,
 				Source:      pkt.Source,
 				Path:        pkt.Path,
-				Extensions:  append(pkt.Extensions, &layers.ExtnOHP{}),
-				L4Header:    pkt.L4Header,
 				Payload:     pkt.Payload,
 			},
 		},

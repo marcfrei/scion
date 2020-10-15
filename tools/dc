@@ -59,9 +59,7 @@ cmd_stop() {
 }
 
 cmd_down() {
-    cmd_stop "*"
-    cmd_run utils_cleaner
-    cmd_scion down
+    cmd_scion down -v
 }
 
 cmd_run() {
@@ -102,7 +100,7 @@ exec_tester() {
     local service="tester_$1"
     shift
     service_running "$service" || cmd_start "$service" &>/dev/null
-    cmd_scion exec -T "$service" bash -l -c "$*"
+    cmd_scion exec -T "$service" sh -l -c "$*"
 }
 
 glob_docker() {

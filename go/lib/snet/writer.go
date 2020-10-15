@@ -23,7 +23,6 @@ import (
 
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
-	"github.com/scionproto/scion/go/lib/l4"
 	"github.com/scionproto/scion/go/lib/spath"
 	"github.com/scionproto/scion/go/lib/topology/underlay"
 )
@@ -84,12 +83,11 @@ func (c *scionConnWriter) WriteTo(b []byte, raddr net.Addr) (int, error) {
 			Source: SCIONAddress{IA: c.base.scionNet.LocalIA,
 				Host: addr.HostFromIP(c.base.listen.IP)},
 			Path: path,
-			L4Header: &l4.UDP{
-				SrcPort:  uint16(c.base.listen.Port),
-				DstPort:  uint16(port),
-				TotalLen: uint16(l4.UDPLen + len(b)),
+			Payload: UDPPayload{
+				SrcPort: uint16(c.base.listen.Port),
+				DstPort: uint16(port),
+				Payload: b,
 			},
-			Payload: common.RawBytes(b),
 		},
 	}
 

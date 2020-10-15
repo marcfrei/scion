@@ -24,21 +24,13 @@ import (
 
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
-	"github.com/scionproto/scion/go/lib/ctrl"
 	"github.com/scionproto/scion/go/lib/ctrl/seg"
 	"github.com/scionproto/scion/go/lib/infra/messenger"
-	"github.com/scionproto/scion/go/lib/l4"
-	"github.com/scionproto/scion/go/lib/layers"
 	"github.com/scionproto/scion/go/lib/log"
+	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/spath"
 )
-
-// QUICBeaconSender is used to send beacons over QUIC.
-type QUICBeaconSender interface {
-	// SendBeacon sends the beacon to the address using the specified ID.
-	SendBeacon(ctx context.Context, msg *seg.Beacon, a net.Addr, id uint64) error
-}
 
 // Path is a one-hop path.
 type Path spath.Path
@@ -52,7 +44,7 @@ type Msg struct {
 	// InfoTime is the timestamp set in the info field.
 	InfoTime time.Time
 	// Pld is the message payload.
-	Pld common.Payload
+	Pld []byte
 }
 
 // Sender is used to send payloads on a one-hop path.
@@ -67,8 +59,6 @@ type Sender struct {
 	macMtx sync.Mutex
 	// MAC is the mac to issue hop fields.
 	MAC hash.Hash
-	// HeaderV2 indicates the new header format should be used.
-	HeaderV2 bool
 }
 
 // Send sends the payload on a one-hop path.
@@ -93,17 +83,12 @@ func (s *Sender) CreatePkt(msg *Msg) (*snet.Packet, error) {
 				IA:   s.IA,
 				Host: addr.HostFromIP(s.Addr.IP),
 			},
-			Path:       (*spath.Path)(path),
-			Extensions: []common.Extension{&layers.ExtnOHP{}},
-			L4Header: &l4.UDP{
+			Path: (*spath.Path)(path),
+			Payload: snet.UDPPayload{
 				SrcPort: uint16(s.Addr.Port),
+				Payload: msg.Pld,
 			},
-			Payload: msg.Pld,
 		},
-	}
-	// For v2 we don't need the OHP extension.
-	if s.HeaderV2 {
-		pkt.PacketInfo.Extensions = nil
 	}
 	return pkt, nil
 }
@@ -112,15 +97,17 @@ func (s *Sender) CreatePkt(msg *Msg) (*snet.Packet, error) {
 func (s *Sender) CreatePath(ifid common.IFIDType, now time.Time) (*Path, error) {
 	s.macMtx.Lock()
 	defer s.macMtx.Unlock()
-	if s.HeaderV2 {
-		path, err := spath.NewOneHopV2(s.IA.I, ifid, now, spath.DefaultHopFExpiry, s.MAC)
-		if err != nil {
-			return nil, err
-		}
-		return (*Path)(path), nil
+
+	path, err := spath.NewOneHopV2(s.IA.I, ifid, now, spath.DefaultHopFExpiry, s.MAC)
+	if err != nil {
+		return nil, err
 	}
-	path := spath.NewOneHop(s.IA.I, ifid, now, spath.DefaultHopFExpiry, s.MAC)
-	return (*Path)(path), path.InitOffsets()
+	return (*Path)(path), nil
+}
+
+// RPC is used to send beacons.
+type RPC interface {
+	SendBeacon(ctx context.Context, b *seg.PathSegment, remote net.Addr) error
 }
 
 // BeaconSender is used to send beacons on a one-hop path.
@@ -129,70 +116,34 @@ type BeaconSender struct {
 	// AddressRewriter resolves SVC addresses, if possible. If it is nil,
 	// resolution is not attempted.
 	AddressRewriter *messenger.AddressRewriter
-	// QUICBeaconSender is used to send beacons over QUIC whenever the sender
-	// detects that the server supports QUIC.
-	QUICBeaconSender QUICBeaconSender
+	RPC             RPC
 }
 
-// Send packs and sends out the beacon. QUIC is first attempted, and if that
-// fails the method falls back on UDP.
-func (s *BeaconSender) Send(ctx context.Context, bseg *seg.Beacon, ia addr.IA,
-	egIfid common.IFIDType, signer ctrl.Signer, ov *net.UDPAddr) error {
+// Send packs and sends out the beacon.
+func (s *BeaconSender) Send(ctx context.Context, bseg *seg.PathSegment, ia addr.IA,
+	egIfid common.IFIDType, ov *net.UDPAddr) error {
 
 	path, err := s.CreatePath(egIfid, time.Now())
 	if err != nil {
 		return err
 	}
 
-	quicOk, err := s.attemptQUIC(ctx, ia, (*spath.Path)(path), ov, bseg)
+	svc := &snet.SVCAddr{
+		IA:      ia,
+		Path:    (*spath.Path)(path),
+		NextHop: ov,
+		SVC:     addr.SvcCS,
+	}
+	addr, redirect, err := s.AddressRewriter.RedirectToQUIC(ctx, svc)
 	if err != nil {
-		return err
+		return serrors.WrapStr("resolving service", err)
 	}
-	if quicOk {
-		// RPC already handled by QUIC
-		return nil
+	if !redirect {
+		return serrors.New("could not resolve QUIC", "addr", svc)
 	}
-
-	pld, err := ctrl.NewPld(bseg, nil)
-	if err != nil {
-		return common.NewBasicError("Unable to create payload", err)
+	log.Debug("Beaconing upgraded to QUIC", "remote", addr)
+	if err := s.RPC.SendBeacon(ctx, bseg, addr); err != nil {
+		return serrors.WrapStr("sending beacon", err)
 	}
-	spld, err := pld.SignedPld(ctx, signer)
-	if err != nil {
-		return common.NewBasicError("Unable to sign payload", err)
-	}
-	packed, err := spld.PackPld()
-	if err != nil {
-		return common.NewBasicError("Unable to pack payload", err)
-	}
-	msg := &Msg{
-		Dst: snet.SCIONAddress{
-			IA:   ia,
-			Host: addr.SvcBS,
-		},
-		Ifid:     egIfid,
-		InfoTime: time.Now(),
-		Pld:      packed,
-	}
-	return s.Sender.Send(msg, ov)
-}
-
-func (s *BeaconSender) attemptQUIC(ctx context.Context, ia addr.IA, path *spath.Path,
-	nextHop *net.UDPAddr, bseg *seg.Beacon) (bool, error) {
-
-	if s.AddressRewriter == nil {
-		return false, nil
-	}
-
-	t := &snet.SVCAddr{IA: ia, Path: path, NextHop: nextHop, SVC: addr.SvcBS}
-	newAddr, redirect, err := s.AddressRewriter.RedirectToQUIC(ctx, t)
-
-	if err != nil || !redirect {
-		log.Debug("Beaconing could not be upgraded to QUIC, using UDP", "remote", newAddr)
-		return false, nil
-	}
-	log.Debug("Beaconing upgraded to QUIC", "remote", newAddr)
-
-	err = s.QUICBeaconSender.SendBeacon(ctx, bseg, newAddr, messenger.NextId())
-	return true, err
+	return nil
 }

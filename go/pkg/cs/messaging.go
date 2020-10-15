@@ -21,9 +21,6 @@ import (
 	"path/filepath"
 
 	"github.com/scionproto/scion/go/lib/addr"
-	"github.com/scionproto/scion/go/lib/infra"
-	"github.com/scionproto/scion/go/lib/infra/infraenv"
-	"github.com/scionproto/scion/go/lib/infra/messenger/tcp"
 	"github.com/scionproto/scion/go/lib/keyconf"
 	"github.com/scionproto/scion/go/lib/scrypto"
 	"github.com/scionproto/scion/go/lib/serrors"
@@ -31,21 +28,6 @@ import (
 	"github.com/scionproto/scion/go/lib/sock/reliable"
 	"github.com/scionproto/scion/go/lib/sock/reliable/reconnect"
 )
-
-// NewMessenger constructs a infra and TCP messenger based on the network
-// configuration.
-func NewMessenger(nc infraenv.NetworkConfig) (infra.Messenger, *tcp.Messenger, error) {
-	msgr, err := nc.Messenger()
-	if err != nil {
-		return nil, nil, serrors.Wrap(infraenv.ErrAppUnableToInitMessenger, err)
-	}
-	tcpMsgr := tcp.NewServerMessenger(&net.TCPAddr{
-		IP:   nc.Public.IP,
-		Port: nc.Public.Port,
-		Zone: nc.Public.Zone,
-	})
-	return msgr, tcpMsgr, nil
-}
 
 // MACGenFactory creates a MAC factory
 func MACGenFactory(configDir string) (func() hash.Hash, error) {
@@ -62,8 +44,8 @@ func MACGenFactory(configDir string) (func() hash.Hash, error) {
 
 // NewOneHopConn registers a new connection that should be used with one hop
 // paths.
-func NewOneHopConn(ia addr.IA, pub *net.UDPAddr, disp string, reconnecting,
-	headerV2 bool) (*snet.SCIONPacketConn, error) {
+func NewOneHopConn(ia addr.IA, pub *net.UDPAddr, disp string,
+	reconnecting bool) (*snet.SCIONPacketConn, error) {
 
 	dispatcherService := reliable.NewDispatcher(disp)
 	if reconnecting {
@@ -71,7 +53,6 @@ func NewOneHopConn(ia addr.IA, pub *net.UDPAddr, disp string, reconnecting,
 	}
 	pktDisp := &snet.DefaultPacketDispatcherService{
 		Dispatcher: dispatcherService,
-		Version2:   headerV2,
 	}
 	// We do not need to drain the connection, since the src address is spoofed
 	// to contain the topo address.

@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,6 +34,8 @@ import (
 	"github.com/scionproto/scion/go/pkg/cs/trust/internal/metrics"
 	"github.com/scionproto/scion/go/pkg/trust"
 )
+
+var errRootCert = serrors.New("root certificate")
 
 // PolicyGen generates a new CA policy.
 type PolicyGen interface {
@@ -98,11 +101,14 @@ func (s *CachingPolicyGen) Generate(ctx context.Context) (cppki.CAPolicy, error)
 		metrics.Signer.ActiveCA().Set(0)
 		return cppki.CAPolicy{}, err
 	}
+	if !s.cached.Equal(policy) {
+		log.FromCtx(ctx).Info("Generated new CA policy",
+			"subject_key_id", fmt.Sprintf("%x", policy.Certificate.SubjectKeyId),
+			"expiration", policy.Certificate.NotAfter,
+		)
+	}
 	s.cached, s.ok = policy, true
-	log.FromCtx(ctx).Info("Generated new CA policy",
-		"subject_key_id", fmt.Sprintf("%x", policy.Certificate.SubjectKeyId),
-		"expiration", policy.Certificate.NotAfter,
-	)
+
 	metrics.Signer.ActiveCA().Set(1)
 	metrics.Signer.LastGeneratedCA().SetToCurrentTime()
 	metrics.Signer.ExpirationCA().Set(metrics.Timestamp(policy.Certificate.NotAfter))
@@ -223,13 +229,17 @@ func (l CACertLoader) CACerts(ctx context.Context) ([]*x509.Certificate, error) 
 	for _, f := range files {
 		cert, err := l.validateCACert(f, opts)
 		if err != nil {
+			if errors.Is(err, errRootCert) {
+				logger.Debug("Ignoring non-CA certificate", "file", f, "reason", err)
+				continue
+			}
 			logger.Info("Ignoring non-CA certificate", "file", f, "reason", err)
 			continue
 		}
 		loaded = append(loaded, f)
 		certs = append(certs, cert)
 	}
-	log.FromCtx(ctx).Info("CA certificates loaded", "files", loaded)
+	log.FromCtx(ctx).Debug("CA certificates loaded", "files", loaded)
 	return certs, nil
 }
 
@@ -242,9 +252,11 @@ func (l CACertLoader) validateCACert(f string, opts x509.VerifyOptions) (*x509.C
 	if err != nil {
 		return nil, err
 	}
+	if t == cppki.Root {
+		return nil, errRootCert
+	}
 	if t != cppki.CA {
 		return nil, serrors.New("wrong type", "actual", t)
-
 	}
 	ia, err := cppki.ExtractIA(chain[0].Subject)
 	if err != nil {

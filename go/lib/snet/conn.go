@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/scionproto/scion/go/lib/ctrl/path_mgmt"
-	"github.com/scionproto/scion/go/lib/scmp"
+	"github.com/scionproto/scion/go/lib/slayers"
 )
 
 const (
@@ -28,20 +28,9 @@ const (
 	BufSize = 1<<16 - 1
 )
 
-type Error interface {
-	error
-	SCMP() *scmp.Hdr
-}
-
-var _ Error = (*OpError)(nil)
-
 type OpError struct {
-	scmp    *scmp.Hdr
-	revInfo *path_mgmt.RevInfo
-}
-
-func (e *OpError) SCMP() *scmp.Hdr {
-	return e.scmp
+	typeCode slayers.SCMPTypeCode
+	revInfo  *path_mgmt.RevInfo
 }
 
 func (e *OpError) RevInfo() *path_mgmt.RevInfo {
@@ -49,7 +38,7 @@ func (e *OpError) RevInfo() *path_mgmt.RevInfo {
 }
 
 func (e *OpError) Error() string {
-	return e.scmp.String()
+	return e.typeCode.String()
 }
 
 var _ net.Conn = (*Conn)(nil)

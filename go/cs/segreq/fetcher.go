@@ -24,8 +24,11 @@ import (
 	"github.com/scionproto/scion/go/cs/metrics"
 	"github.com/scionproto/scion/go/cs/segutil"
 	"github.com/scionproto/scion/go/lib/addr"
+	"github.com/scionproto/scion/go/lib/common"
+	"github.com/scionproto/scion/go/lib/ctrl/seg"
 	"github.com/scionproto/scion/go/lib/infra"
 	"github.com/scionproto/scion/go/lib/infra/modules/segfetcher"
+	"github.com/scionproto/scion/go/lib/infra/modules/seghandler"
 	"github.com/scionproto/scion/go/lib/pathdb"
 	"github.com/scionproto/scion/go/lib/pathdb/query"
 	"github.com/scionproto/scion/go/lib/revcache"
@@ -34,7 +37,6 @@ import (
 	"github.com/scionproto/scion/go/lib/snet/addrutil"
 	"github.com/scionproto/scion/go/lib/topology"
 	"github.com/scionproto/scion/go/pkg/trust"
-	"github.com/scionproto/scion/go/proto"
 )
 
 type FetcherConfig struct {
@@ -51,39 +53,53 @@ type FetcherConfig struct {
 	PathDB pathdb.PathDB
 	// RevCache is the revocation cache to use.
 	RevCache revcache.RevCache
-	// RequestAPI is the request api to use.
-	RequestAPI segfetcher.RequestAPI
-
-	HeaderV2 bool
+	// RPC is the RPC used to request segments.
+	RPC segfetcher.RPC
 }
 
 // NewFetcher creates a segment fetcher configured for fetching segments from
 // inside the control service
 func NewFetcher(cfg FetcherConfig) *segfetcher.Fetcher {
-
-	fetcher := segfetcher.FetcherConfig{
-		QueryInterval:    cfg.QueryInterval,
-		Verifier:         cfg.Verifier,
-		PathDB:           cfg.PathDB,
-		RevCache:         cfg.RevCache,
-		RequestAPI:       cfg.RequestAPI,
-		LocalInfo:        &localInfo{cfg.IA},
-		MetricsNamespace: metrics.PSNamespace,
-		DstProvider:      nil, // see below
-	}.New()
-	// Recursive/cyclic structure: the dstProvider in the fetcher uses the
-	// fetcher (see notes on dstProvider below).
-	fetcher.Requester.(*segfetcher.DefaultRequester).DstProvider = &dstProvider{
+	d := &dstProvider{
 		localIA: cfg.IA,
-		router:  newRouter(cfg, fetcher),
 		segSelector: &SegSelector{
 			PathDB:       cfg.PathDB,
 			RevCache:     cfg.RevCache,
 			TopoProvider: cfg.TopoProvider,
-			Pather:       addrutil.NewPather(cfg.TopoProvider, cfg.HeaderV2),
+			Pather: addrutil.Pather{
+				UnderlayNextHop: func(ifID uint16) (*net.UDPAddr, bool) {
+					return cfg.TopoProvider.Get().UnderlayNextHop2(common.IFIDType(ifID))
+				},
+			},
 		},
+		// Recursive/cyclic structure: the dstProvider in the fetcher uses the
+		// fetcher (see notes on dstProvider below).
 	}
 
+	fetcher := &segfetcher.Fetcher{
+		QueryInterval: cfg.QueryInterval,
+		PathDB:        cfg.PathDB,
+		Resolver: segfetcher.NewResolver(
+			cfg.PathDB,
+			cfg.RevCache,
+			&localInfo{localIA: cfg.IA},
+		),
+		ReplyHandler: &seghandler.Handler{
+			Verifier: &seghandler.DefaultVerifier{Verifier: cfg.Verifier},
+			Storage: &seghandler.DefaultStorage{
+				PathDB:   cfg.PathDB,
+				RevCache: cfg.RevCache,
+			},
+		},
+		Requester: &segfetcher.DefaultRequester{
+			RPC:           cfg.RPC,
+			DstProvider:   d,
+			TimeoutFactor: 0.33,
+		},
+		Metrics: segfetcher.NewFetcherMetrics(metrics.PSNamespace),
+	}
+
+	d.router = newRouter(cfg, fetcher)
 	return fetcher
 }
 
@@ -104,8 +120,7 @@ func newRouter(cfg FetcherConfig, fetcher *segfetcher.Fetcher) snet.Router {
 				cfg.TopoProvider.Get().Core(),
 				cfg.Inspector,
 				cfg.PathDB),
-			Fetcher:  fetcher,
-			HeaderV2: cfg.HeaderV2,
+			Fetcher: fetcher,
 		},
 	}
 }
@@ -155,7 +170,7 @@ func (p *dstProvider) Dst(ctx context.Context, req segfetcher.Request) (net.Addr
 
 	var path snet.Path
 	switch req.SegType {
-	case proto.PathSegType_core:
+	case seg.TypeCore:
 		// fast/simple path for core segment requests (only up segment required).
 		// Must NOT use the router recursively here;
 		// as it tries to find all paths, including paths through other core ASes,
@@ -167,7 +182,7 @@ func (p *dstProvider) Dst(ctx context.Context, req segfetcher.Request) (net.Addr
 			return nil, serrors.Wrap(segfetcher.ErrNotReachable, err)
 		}
 		path = up
-	case proto.PathSegType_down:
+	case seg.TypeDown:
 		// Select a random path (just like we choose a random segment above)
 		// Avoids potentially being stuck with a broken but not revoked path;
 		// allows clients to retry with possibly different path in case of failure.
@@ -184,7 +199,7 @@ func (p *dstProvider) Dst(ctx context.Context, req segfetcher.Request) (net.Addr
 		IA:      path.Destination(),
 		Path:    path.Path(),
 		NextHop: path.UnderlayNextHop(),
-		SVC:     addr.SvcPS,
+		SVC:     addr.SvcCS,
 	}
 	return addr, nil
 }
@@ -193,6 +208,6 @@ func (p *dstProvider) upPath(ctx context.Context, dst addr.IA) (snet.Path, error
 	return p.segSelector.SelectSeg(ctx, &query.Params{
 		StartsAt: []addr.IA{dst},
 		EndsAt:   []addr.IA{p.localIA},
-		SegTypes: []proto.PathSegType{proto.PathSegType_up},
+		SegTypes: []seg.Type{seg.TypeUp},
 	})
 }

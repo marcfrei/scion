@@ -72,8 +72,7 @@ func TestDecodeBuffer(t *testing.T) {
 			},
 			Check: func(t *testing.T, pkt *Packet) {
 				assert.Equal(t, xtest.MustParseIA("1-ff00:0:110"), pkt.SCION.SrcIA)
-				assert.Equal(t, slayers.SCMPTypeExternalInterfaceDown,
-					int(pkt.SCMP.TypeCode.Type()))
+				assert.Equal(t, slayers.SCMPTypeExternalInterfaceDown, pkt.SCMP.TypeCode.Type())
 				assert.Equal(t, slayers.LayerTypeSCMP, pkt.L4)
 			},
 			ErrAssertion: assert.NoError,
@@ -96,10 +95,8 @@ func TestDecodeBuffer(t *testing.T) {
 			}
 			buf := gopacket.NewSerializeBuffer()
 			require.NoError(t, gopacket.SerializeLayers(buf, opts, tc.Layers(t)...))
-			pkt := &Packet{
-				HeaderV2: true,
-				buffer:   buf.Bytes(),
-			}
+			pkt := newPacket()
+			pkt.buffer = buf.Bytes()
 			err := pkt.decodeBuffer()
 			tc.ErrAssertion(t, err)
 			if err != nil {

@@ -42,7 +42,6 @@ from python.topology.common import (
     join_host_port,
     json_default,
     SCION_SERVICE_NAMES,
-    srv_iter,
     TopoID
 )
 from python.topology.net import (
@@ -138,7 +137,7 @@ class TopoGenerator(object):
             networks[k] = v
         self._iterate(self._generate_as_topo)
         self._iterate(self._generate_as_list)
-        self._write_as_topos()
+        self._iterate(self._write_as_topo)
         self._write_as_list()
         self._write_ifids()
         return self.topo_dicts, networks
@@ -179,8 +178,6 @@ class TopoGenerator(object):
         link_addr_type = addr_type_from_underlay(attrs.get('underlay', DEFAULT_UNDERLAY))
         self._reg_link_addrs(local_br, remote_br, l_ifid, r_ifid, link_addr_type)
         self._reg_addr(local, local_br + "_ctrl", addr_type)
-        if self.args.docker:
-            self._reg_addr(local, local_br + "_internal", addr_type)
         if not self.args.docker:
             self.args.port_gen.register(local_br + "_ctrl")
             self.args.port_gen.register(local_br + "_internal")
@@ -264,6 +261,7 @@ class TopoGenerator(object):
 
     def _gen_srv_entries(self, topo_id, as_conf):
         srvs = [("control_servers", DEFAULT_CONTROL_SERVERS, "cs", "control_service")]
+        srvs.append(("control_servers", DEFAULT_CONTROL_SERVERS, "cs", "discovery_service"))
         if self.args.colibri:
             srvs.append(("colibri_servers", DEFAULT_COLIBRI_SERVERS, "co", "colibri_service"))
         if as_conf.get('core', False):
@@ -317,8 +315,9 @@ class TopoGenerator(object):
                                                         r_ifid, link_addr_type)
 
         ctrl_addr = int_addr = self._reg_addr(local, local_br + "_ctrl", addr_type)
+        # for docker we use the same internal and control address.
         if self.args.docker:
-            int_addr = self._reg_addr(local, local_br + "_internal", addr_type)
+            int_addr = ctrl_addr
 
         if self.topo_dicts[local]["border_routers"].get(local_br) is None:
             ctrl_port = 30242
@@ -359,7 +358,8 @@ class TopoGenerator(object):
         if not self.args.docker:
             port = self.args.port_gen.register(elem_id)
         d = {
-            'Addr': join_host_port(self._reg_addr(topo_id, reg_id, addr_type).ip, port),
+            'ctrl_addr': join_host_port(self._reg_addr(topo_id, reg_id, addr_type).ip, port),
+            'data_addr': join_host_port(self._reg_addr(topo_id, reg_id, addr_type).ip, 30056),
         }
         self.topo_dicts[topo_id]['sigs'][elem_id] = d
 
@@ -370,13 +370,11 @@ class TopoGenerator(object):
             key = "Non-core"
         self.as_list[key].append(str(topo_id))
 
-    def _write_as_topos(self):
-        for topo_id, as_topo, base in srv_iter(
-                self.topo_dicts, self.args.output_dir, common=True):
-            path = os.path.join(base, TOPO_FILE)
-            contents_json = json.dumps(self.topo_dicts[topo_id],
-                                       default=json_default, indent=2)
-            write_file(path, contents_json + '\n')
+    def _write_as_topo(self, topo_id, _as_conf):
+        path = os.path.join(topo_id.base_dir(self.args.output_dir), TOPO_FILE)
+        contents_json = json.dumps(self.topo_dicts[topo_id],
+                                   default=json_default, indent=2)
+        write_file(path, contents_json + '\n')
 
     def _write_as_list(self):
         list_path = os.path.join(self.args.output_dir, AS_LIST_FILE)

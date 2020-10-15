@@ -15,35 +15,40 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/scionproto/scion/go/cs/beacon"
 	"github.com/scionproto/scion/go/cs/beaconing"
+	beaconinggrpc "github.com/scionproto/scion/go/cs/beaconing/grpc"
 	"github.com/scionproto/scion/go/cs/config"
-	"github.com/scionproto/scion/go/cs/handlers"
 	"github.com/scionproto/scion/go/cs/ifstate"
-	"github.com/scionproto/scion/go/cs/keepalive"
-	"github.com/scionproto/scion/go/cs/metrics"
+	csmetrics "github.com/scionproto/scion/go/cs/metrics"
 	"github.com/scionproto/scion/go/cs/onehop"
-	"github.com/scionproto/scion/go/cs/revocation"
+	segreggrpc "github.com/scionproto/scion/go/cs/segreg/grpc"
 	"github.com/scionproto/scion/go/cs/segreq"
+	segreqgrpc "github.com/scionproto/scion/go/cs/segreq/grpc"
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
 	libconfig "github.com/scionproto/scion/go/lib/config"
 	"github.com/scionproto/scion/go/lib/env"
 	"github.com/scionproto/scion/go/lib/fatal"
-	"github.com/scionproto/scion/go/lib/infra"
 	"github.com/scionproto/scion/go/lib/infra/infraenv"
 	"github.com/scionproto/scion/go/lib/infra/messenger"
 	"github.com/scionproto/scion/go/lib/infra/modules/itopo"
+	segfetchergrpc "github.com/scionproto/scion/go/lib/infra/modules/segfetcher/grpc"
 	"github.com/scionproto/scion/go/lib/infra/modules/seghandler"
 	"github.com/scionproto/scion/go/lib/log"
+	libmetrics "github.com/scionproto/scion/go/lib/metrics"
 	"github.com/scionproto/scion/go/lib/pathdb"
+	"github.com/scionproto/scion/go/lib/periodic"
 	"github.com/scionproto/scion/go/lib/prom"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/snet"
@@ -52,19 +57,20 @@ import (
 	"github.com/scionproto/scion/go/pkg/command"
 	"github.com/scionproto/scion/go/pkg/cs"
 	cstrust "github.com/scionproto/scion/go/pkg/cs/trust"
-	trusthandler "github.com/scionproto/scion/go/pkg/cs/trust/handler"
+	cstrustgrpc "github.com/scionproto/scion/go/pkg/cs/trust/grpc"
+	cstrustmetrics "github.com/scionproto/scion/go/pkg/cs/trust/metrics"
+	"github.com/scionproto/scion/go/pkg/discovery"
+	libgrpc "github.com/scionproto/scion/go/pkg/grpc"
+	cppb "github.com/scionproto/scion/go/pkg/proto/control_plane"
+	dpb "github.com/scionproto/scion/go/pkg/proto/discovery"
 	"github.com/scionproto/scion/go/pkg/storage"
 	"github.com/scionproto/scion/go/pkg/trust"
 	"github.com/scionproto/scion/go/pkg/trust/compat"
+	trustgrpc "github.com/scionproto/scion/go/pkg/trust/grpc"
 	trustmetrics "github.com/scionproto/scion/go/pkg/trust/metrics"
 	"github.com/scionproto/scion/go/pkg/trust/renewal"
 	"github.com/scionproto/scion/go/proto"
 )
-
-// CommandPather returns the path to a command.
-type CommandPather interface {
-	CommandPath() string
-}
 
 func main() {
 	var flags struct {
@@ -108,8 +114,10 @@ func run(file string) error {
 	defer log.HandlePanic()
 	// TODO(roosd): This should be refactored when applying the new metrics
 	// approach.
-	metrics.InitBSMetrics()
-	metrics.InitPSMetrics()
+	csmetrics.InitBSMetrics()
+	csmetrics.InitPSMetrics()
+	metrics := cs.NewMetrics()
+
 	intfs, err := setup(&cfg)
 	if err != nil {
 		return err
@@ -122,33 +130,42 @@ func run(file string) error {
 	}
 	defer closer.Close()
 
+	revCache := storage.NewRevocationStorage()
+	defer revCache.Close()
+	pathDB, err := storage.NewPathStorage(cfg.PathDB)
+	if err != nil {
+		return serrors.WrapStr("initializing path storage", err)
+	}
+	pathDB = pathdb.WithMetrics(string(storage.BackendSqlite), pathDB)
+	defer pathDB.Close()
+
 	nc := infraenv.NetworkConfig{
 		IA:                    topo.IA(),
-		Public:                topo.PublicAddress(addr.SvcBS, cfg.General.ID),
-		SVC:                   addr.SvcWildcard,
+		Public:                topo.PublicAddress(addr.SvcCS, cfg.General.ID),
 		ReconnectToDispatcher: cfg.General.ReconnectToDispatcher,
 		QUIC: infraenv.QUIC{
 			Address:  cfg.QUIC.Address,
 			CertFile: cfg.QUIC.CertFile,
 			KeyFile:  cfg.QUIC.KeyFile,
 		},
-		SVCResolutionFraction: cfg.QUIC.ResolutionFraction,
-		SVCRouter:             messenger.NewSVCRouter(itopo.Provider()),
-		Version2:              cfg.Features.HeaderV2,
+		SVCRouter: messenger.NewSVCRouter(itopo.Provider()),
+		SCMPHandler: snet.DefaultSCMPHandler{
+			RevocationHandler: cs.RevocationHandler{RevCache: revCache},
+		},
 	}
-	msgr, tcpMsgr, err := cs.NewMessenger(nc)
+	quicStack, err := nc.QUICStack()
 	if err != nil {
-		return err
+		return serrors.WrapStr("initializing QUIC stack", err)
 	}
-
-	revCache := storage.NewRevocationStorage()
-	pathDB, err := storage.NewPathStorage(cfg.PathDB)
+	defer quicStack.RedirectCloser()
+	tcpStack, err := nc.TCPStack()
 	if err != nil {
-		return serrors.WrapStr("initializing path storage", err)
+		return serrors.WrapStr("initializing TCP stack", err)
 	}
-	defer revCache.Close()
-	pathDB = pathdb.WithMetrics(string(storage.BackendSqlite), pathDB)
-	defer pathDB.Close()
+	dialer := &libgrpc.QUICDialer{
+		Rewriter: nc.AddressRewriter(nil),
+		Dialer:   quicStack.Dialer,
+	}
 
 	trustDB, err := storage.NewTrustStorage(cfg.TrustDB)
 	if err != nil {
@@ -167,98 +184,116 @@ func run(file string) error {
 	defer beaconStore.Close()
 
 	inspector := trust.DBInspector{DB: trustDB}
-	provider := cs.NewTrustProvider(
-		cs.TrustProviderConfig{
+	provider := trust.FetchingProvider{
+		DB: trustDB,
+		Fetcher: trustgrpc.Fetcher{
 			IA:       topo.IA(),
-			TrustDB:  trustDB,
-			RPC:      msgr,
-			HeaderV2: cfg.Features.HeaderV2,
+			Dialer:   dialer,
+			Requests: libmetrics.NewPromCounter(trustmetrics.RPC.Fetches),
 		},
-	)
+		Recurser: trust.ASLocalRecurser{IA: topo.IA()},
+		// XXX(roosd): cyclic dependency on router. It is set below.
+	}
 	verifier := compat.Verifier{
 		Verifier: trust.Verifier{
 			Engine: provider,
 		},
 	}
 	fetcherCfg := segreq.FetcherConfig{
-		IA:           topo.IA(),
-		PathDB:       pathDB,
-		RevCache:     revCache,
-		RequestAPI:   msgr,
+		IA:            topo.IA(),
+		PathDB:        pathDB,
+		RevCache:      revCache,
+		QueryInterval: cfg.PS.QueryInterval.Duration,
+		RPC: &segfetchergrpc.Requester{
+			Dialer: dialer,
+		},
 		Inspector:    inspector,
 		TopoProvider: itopo.Provider(),
 		Verifier:     verifier,
-		HeaderV2:     cfg.Features.HeaderV2,
 	}
-	cs.SetTrustRouter(&provider, segreq.NewRouter(fetcherCfg))
+	provider.Router = trust.AuthRouter{
+		ISD:    topo.IA().I,
+		DB:     trustDB,
+		Router: segreq.NewRouter(fetcherCfg),
+	}
+
+	quicServer := grpc.NewServer(libgrpc.UnaryServerInterceptor())
+	tcpServer := grpc.NewServer(libgrpc.UnaryServerInterceptor())
 
 	// Register trust material related handlers.
-	trcHandler := trusthandler.TRCReq{Provider: provider, IA: topo.IA()}
-	cs.MultiRegister(infra.TRCRequest, trcHandler, msgr, tcpMsgr)
-	chainHandler := trusthandler.ChainReq{Provider: provider, IA: topo.IA()}
-	cs.MultiRegister(infra.ChainRequest, chainHandler, msgr, tcpMsgr)
+	trustServer := &cstrustgrpc.MaterialServer{
+		Provider: provider,
+		IA:       topo.IA(),
+		Requests: libmetrics.NewPromCounter(cstrustmetrics.Handler.Requests),
+	}
+	cppb.RegisterTrustMaterialServiceServer(quicServer, trustServer)
+	cppb.RegisterTrustMaterialServiceServer(tcpServer, trustServer)
 
-	// Register pathing related handlers
-	msgr.AddHandler(infra.Seg, beaconing.NewHandler(topo.IA(), intfs, beaconStore, verifier))
+	// Handle beaconing.
+	cppb.RegisterSegmentCreationServiceServer(quicServer, &beaconinggrpc.SegmentCreationServer{
+		Handler: &beaconing.Handler{
+			LocalIA:        topo.IA(),
+			Inserter:       beaconStore,
+			Interfaces:     intfs,
+			Verifier:       verifier,
+			BeaconsHandled: libmetrics.NewPromCounter(csmetrics.Beaconing.BeaconsReceived),
+		},
+	})
 
-	tcpMsgr.AddHandler(infra.SegRequest, segreq.NewForwardingHandler(
-		topo.IA(),
-		topo.Core(),
-		inspector,
-		pathDB,
-		revCache,
-		segreq.NewFetcher(fetcherCfg),
-	))
+	// Handle segment lookup
+	authLookupServer := &segreqgrpc.LookupServer{
+		Lookuper: segreq.AuthoritativeLookup{
+			LocalIA:     topo.IA(),
+			CoreChecker: segreq.CoreChecker{Inspector: inspector},
+			PathDB:      pathDB,
+		},
+		RevCache:        revCache,
+		Requests:        libmetrics.NewPromCounter(csmetrics.Requests.Requests),
+		SegmentsSent:    libmetrics.NewPromCounter(csmetrics.Requests.SegmentsSent),
+		RevocationsSent: libmetrics.NewPromCounter(csmetrics.Requests.RevocationsSent),
+	}
+	forwardingLookupServer := &segreqgrpc.LookupServer{
+		Lookuper: segreq.ForwardingLookup{
+			LocalIA:     topo.IA(),
+			CoreChecker: segreq.CoreChecker{Inspector: inspector},
+			Fetcher:     segreq.NewFetcher(fetcherCfg),
+			Expander: segreq.WildcardExpander{
+				LocalIA:   topo.IA(),
+				Core:      topo.Core(),
+				Inspector: inspector,
+				PathDB:    pathDB,
+			},
+		},
+		RevCache:        revCache,
+		Requests:        libmetrics.NewPromCounter(csmetrics.Requests.Requests),
+		SegmentsSent:    libmetrics.NewPromCounter(csmetrics.Requests.SegmentsSent),
+		RevocationsSent: libmetrics.NewPromCounter(csmetrics.Requests.RevocationsSent),
+	}
 
+	// Always register a forwarding lookup for AS internal requests.
+	cppb.RegisterSegmentLookupServiceServer(tcpServer, forwardingLookupServer)
 	if topo.Core() {
-		msgr.AddHandler(infra.SegRequest, segreq.NewAuthoritativeHandler(
-			topo.IA(),
-			inspector,
-			pathDB,
-			revCache,
-		))
-
-		segHandler := seghandler.Handler{
-			Verifier: &seghandler.DefaultVerifier{
-				Verifier: verifier,
-			},
-			Storage: &seghandler.DefaultStorage{
-				PathDB:   pathDB,
-				RevCache: revCache,
-			},
-		}
-		msgr.AddHandler(infra.SegReg, &handlers.SegReg{SegHandler: segHandler})
+		cppb.RegisterSegmentLookupServiceServer(quicServer, authLookupServer)
+	} else {
+		cppb.RegisterSegmentLookupServiceServer(quicServer, forwardingLookupServer)
 	}
 
-	// Keepalive mechanism is deprecated and will be removed with change to
-	// header v2. Disable with https://github.com/Anapaya/scion/issues/3337.
-	if !cfg.Features.HeaderV2 || true {
-		msgr.AddHandler(infra.IfStateReq, ifstate.NewHandler(intfs))
-		msgr.AddHandler(infra.IfId, keepalive.NewHandler(topo.IA(), intfs,
-			keepalive.StateChangeTasks{
-				RevDropper: beaconStore,
-				IfStatePusher: ifstate.PusherConf{
-					Intfs:        intfs,
-					Msgr:         msgr,
-					TopoProvider: itopo.Provider(),
-				}.New(),
-			}),
-		)
+	// Handle segment registration.
+	if topo.Core() {
+		cppb.RegisterSegmentRegistrationServiceServer(quicServer, &segreggrpc.RegistrationServer{
+			SegHandler: seghandler.Handler{
+				Verifier: &seghandler.DefaultVerifier{
+					Verifier: verifier,
+				},
+				Storage: &seghandler.DefaultStorage{
+					PathDB:   pathDB,
+					RevCache: revCache,
+				},
+			},
+			Registrations: libmetrics.NewPromCounter(csmetrics.Registrations.Registrations),
+		})
+
 	}
-	revHandler := handlers.RevocHandler{
-		RevCache: revCache,
-		Verifier: verifier,
-	}
-	otherRevHandler := revocation.NewHandler(beaconStore, verifier, 5*time.Second)
-	msgr.AddHandler(infra.SignedRev, infra.HandlerFunc(func(r *infra.Request) *infra.HandlerResult {
-		revHandler.Handle(r)
-		otherRevHandler.Handle(r)
-		// Always return success, since the metrics libraries ignore this result anyway
-		return &infra.HandlerResult{
-			Result: prom.Success,
-			Status: prom.StatusOk,
-		}
-	}))
 
 	signer, err := cs.NewSigner(topo.IA(), trustDB, cfg.General.ConfigDir)
 	if err != nil {
@@ -275,37 +310,81 @@ func run(file string) error {
 		if err := cs.LoadClientChains(renewalDB, cfg.General.ConfigDir); err != nil {
 			return serrors.WrapStr("loading client certificate chains", err)
 		}
-		chainBuilder = cs.NewChainBuilder(topo.IA(), trustDB, cfg.CA.MaxASValidity.Duration,
-			cfg.General.ConfigDir)
-		cs.MultiRegister(infra.ChainRenewalRequest,
-			trusthandler.ChainRenewalRequest{
-				Verifier: trusthandler.RenewalRequestVerifierFunc(
-					renewal.VerifyChainRenewalRequest),
-				ChainBuilder: chainBuilder,
-				DB:           renewalDB,
-				IA:           topo.IA(),
-				Signer:       signer,
+		chainBuilder = cs.NewChainBuilder(
+			topo.IA(),
+			trustDB,
+			cfg.CA.MaxASValidity.Duration,
+			cfg.General.ConfigDir,
+		)
+		renewalServer := &cstrustgrpc.RenewalServer{
+			Verifier:     cstrustgrpc.RenewalRequestVerifierFunc(renewal.VerifyChainRenewalRequest),
+			ChainBuilder: chainBuilder,
+			DB:           renewalDB,
+			IA:           topo.IA(),
+			Signer:       signer,
+			Requests:     libmetrics.NewPromCounter(cstrustmetrics.Handler.Requests),
+		}
+		cppb.RegisterChainRenewalServiceServer(quicServer, renewalServer)
+		cppb.RegisterChainRenewalServiceServer(tcpServer, renewalServer)
+
+		periodic.Start(
+			periodic.Func{
+				TaskName: "update client certificates from disk",
+				Task: func(ctx context.Context) {
+					if err := cs.LoadClientChains(renewalDB, cfg.General.ConfigDir); err != nil {
+						log.Debug("loading client certificate chains", "error", err)
+					}
+				},
 			},
-			msgr, tcpMsgr,
+			30*time.Second,
+			5*time.Second,
 		)
 	}
 
+	// Frequently regenerate signers to catch problems, and update the metrics.
+	periodic.Start(
+		periodic.Func{
+			TaskName: "signer generator",
+			Task: func(ctx context.Context) {
+				signer.Sign(ctx, []byte{})
+				if chainBuilder.PolicyGen != nil {
+					chainBuilder.PolicyGen.Generate(ctx)
+				}
+			},
+		},
+		10*time.Second,
+		5*time.Second,
+	)
+
+	ds := discovery.Topology{
+		Provider: itopo.Provider(),
+		Requests: libmetrics.NewPromCounter(metrics.DiscoveryRequestsTotal),
+	}
+	dpb.RegisterDiscoveryServiceServer(quicServer, ds)
+	dpb.RegisterDiscoveryServiceServer(tcpServer, ds)
+
+	dsHealth := health.NewServer()
+	dsHealth.SetServingStatus("discovery", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(tcpServer, dsHealth)
+
 	go func() {
 		defer log.HandlePanic()
-		msgr.ListenAndServe()
+		if err := quicServer.Serve(quicStack.Listener); err != nil {
+			fatal.Fatal(err)
+		}
 	}()
-	defer msgr.CloseServer()
 	go func() {
 		defer log.HandlePanic()
-		tcpMsgr.ListenAndServe()
+		if err := tcpServer.Serve(tcpStack); err != nil {
+			fatal.Fatal(err)
+		}
 	}()
-	defer tcpMsgr.CloseServer()
+
 	err = cs.StartHTTPEndpoints(cfg.General.ID, cfg, signer, chainBuilder, cfg.Metrics)
 	if err != nil {
 		return serrors.WrapStr("registering status pages", err)
 	}
-	ohpConn, err := cs.NewOneHopConn(topo.IA(), nc.Public, "", cfg.General.ReconnectToDispatcher,
-		cfg.Features.HeaderV2)
+	ohpConn, err := cs.NewOneHopConn(topo.IA(), nc.Public, "", cfg.General.ReconnectToDispatcher)
 	if err != nil {
 		return serrors.WrapStr("creating one-hop connection", err)
 	}
@@ -317,34 +396,44 @@ func run(file string) error {
 	if err != nil {
 		log.Info("Failed to read static info", "err", err)
 	}
-	tasks, err := cs.StartTasks(cs.TasksConfig{
-		Public:      nc.Public,
-		Intfs:       intfs,
-		TrustDB:     trustDB,
-		PathDB:      pathDB,
-		RevCache:    revCache,
-		BeaconStore: beaconStore,
-		Signer:      signer,
-		OneHopConn:  ohpConn,
-		Msgr:        msgr,
-		AddressRewriter: nc.AddressRewriter(
-			&onehop.OHPPacketDispatcherService{
-				PacketDispatcherService: &snet.DefaultPacketDispatcherService{
-					Dispatcher: reliable.NewDispatcher(""),
-					Version2:   cfg.Features.HeaderV2,
-				},
+	addressRewriter := nc.AddressRewriter(
+		&onehop.OHPPacketDispatcherService{
+			PacketDispatcherService: &snet.DefaultPacketDispatcherService{
+				Dispatcher: reliable.NewDispatcher(""),
 			},
-		),
-		Inspector:    inspector,
-		MACGen:       macGen,
-		TopoProvider: itopo.Provider(),
-		StaticInfo:   func() *beaconing.StaticInfoCfg { return staticInfo },
+		},
+	)
+	tasks, err := cs.StartTasks(cs.TasksConfig{
+		Public:   nc.Public,
+		Intfs:    intfs,
+		TrustDB:  trustDB,
+		PathDB:   pathDB,
+		RevCache: revCache,
+		BeaconSender: &onehop.BeaconSender{
+			Sender: onehop.Sender{
+				Conn: ohpConn,
+				IA:   topo.IA(),
+				MAC:  macGen(),
+				Addr: nc.Public,
+			},
+			AddressRewriter: addressRewriter,
+			RPC: beaconinggrpc.BeaconSender{
+				Dialer: dialer,
+			},
+		},
+		SegmentRegister: beaconinggrpc.Registrar{Dialer: dialer},
+		BeaconStore:     beaconStore,
+		Signer:          signer,
+		OneHopConn:      ohpConn,
+		Inspector:       inspector,
+		MACGen:          macGen,
+		TopoProvider:    itopo.Provider(),
+		StaticInfo:      func() *beaconing.StaticInfoCfg { return staticInfo },
 
 		OriginationInterval:  cfg.BS.OriginationInterval.Duration,
 		PropagationInterval:  cfg.BS.PropagationInterval.Duration,
 		RegistrationInterval: cfg.BS.RegistrationInterval.Duration,
 		AllowIsdLoop:         isdLoopAllowed,
-		HeaderV2:             cfg.Features.HeaderV2,
 	})
 	if err != nil {
 		serrors.WrapStr("starting periodic tasks", err)
@@ -352,25 +441,6 @@ func run(file string) error {
 	defer tasks.Kill()
 	log.Info("Started periodic tasks")
 
-	// Disable when addressing https://github.com/Anapaya/scion/issues/3337.
-	if !cfg.Features.HeaderV2 || true {
-		legacy := cs.StartLegacyTasks(cs.LegacyTasksConfig{
-			Public:               nc.Public,
-			Intfs:                intfs,
-			OneHopConn:           ohpConn,
-			BeaconStore:          beaconStore,
-			Signer:               signer,
-			Msgr:                 msgr,
-			MACGen:               macGen,
-			TopoProvider:         itopo.Provider(),
-			KeepaliveInterval:    cfg.BS.KeepaliveInterval.Duration,
-			ExpiredCheckInterval: cfg.BS.ExpiredCheckInterval.Duration,
-			RevTTL:               cfg.BS.RevTTL.Duration,
-			RevOverlap:           cfg.BS.RevOverlap.Duration,
-			HeaderV2:             cfg.Features.HeaderV2,
-		})
-		defer legacy.Kill()
-	}
 	select {
 	case <-fatal.ShutdownChan():
 		// Whenever we receive a SIGINT or SIGTERM we exit without an error.
@@ -406,7 +476,6 @@ func setup(cfg *config.Config) (*ifstate.Interfaces, error) {
 		return nil, serrors.WrapStr("loading topology", err)
 	}
 	intfs := ifstate.NewInterfaces(topo.IFInfoMap(), ifstate.Config{})
-	prometheus.MustRegister(ifstate.NewCollector(intfs))
 	itopo.Init(&itopo.Config{
 		ID:  cfg.General.ID,
 		Svc: proto.ServiceType_cs,

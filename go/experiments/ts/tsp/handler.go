@@ -40,9 +40,13 @@ func StartHandler(s snet.PacketDispatcherService, ctx context.Context,
 				handlerLog.Printf("Failed to read packet: %v\n", err)
 				continue
 			}
+			payload, ok := packet.Payload.(snet.UDPPayload)
+			if !ok {
+				handlerLog.Printf("Failed to read packet payload: %v\n", common.TypeOf(packet.Payload))
+				continue
+			}
 
-			clockOffset, err := time.ParseDuration(
-				string(packet.Payload.(common.RawBytes)))
+			clockOffset, err := time.ParseDuration(string(payload.Payload))
 			if err != nil {
 				handlerLog.Printf("Failed to decode packet: %v\n", err)
 				continue

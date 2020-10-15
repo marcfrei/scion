@@ -17,7 +17,6 @@ import (
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/spath"
-	"github.com/scionproto/scion/go/proto"
 )
 
 // New creates a new fake SCIOND implementation using the data in the script.
@@ -78,7 +77,8 @@ type Path struct {
 	// JSONExpirationTimestamp contains the point in time when the path expires, in seconds,
 	// relative to the time of fake connector creation. Negative timestamps are also supported, and
 	// would mean SCIOND served a path that expired in the past.
-	JSONExpirationTimestamp int `json:"expiration_timestamp"`
+	JSONExpirationTimestamp int  `json:"expiration_timestamp"`
+	HeaderV2                bool `json:"header_v2"`
 
 	metadata pathMetadata
 }
@@ -88,27 +88,35 @@ func (p Path) UnderlayNextHop() *net.UDPAddr {
 }
 
 func (p Path) Path() *spath.Path {
-	return DummyPath()
+	return DummyPath(p.HeaderV2)
 }
 
 // DummyPath creates a path that is reversible.
-func DummyPath() *spath.Path {
-	return &spath.Path{
-		Raw:    make(common.RawBytes, spath.InfoFieldLength+2*spath.HopFieldLength),
-		HopOff: spath.InfoFieldLength,
+func DummyPath(headerV2 bool) *spath.Path {
+	var res *spath.Path
+	if headerV2 {
+		res = spath.NewV2(make(common.RawBytes, spath.InfoFieldLength+2*spath.HopFieldLength),
+			false)
+		res.HopOff = spath.InfoFieldLength
+		return res
+	} else {
+		return &spath.Path{
+			Raw:    make(common.RawBytes, spath.InfoFieldLength+2*spath.HopFieldLength),
+			HopOff: spath.InfoFieldLength,
+		}
 	}
 }
 
 func (p Path) Interfaces() []snet.PathInterface {
 	ifaces := make([]snet.PathInterface, len(p.JSONInterfaces))
-	for i := range p.JSONInterfaces {
-		ifaces[i] = p.JSONInterfaces[i]
+	for i, jsonIface := range p.JSONInterfaces {
+		ifaces[i] = snet.PathInterface{IA: jsonIface.IA, ID: jsonIface.ID}
 	}
 	return ifaces
 }
 
 func (p Path) Destination() addr.IA {
-	return p.JSONInterfaces[len(p.JSONInterfaces)-1].JSONIA
+	return p.JSONInterfaces[len(p.JSONInterfaces)-1].IA
 }
 
 func (p Path) Metadata() snet.PathMetadata {
@@ -124,6 +132,7 @@ func (p Path) Copy() snet.Path {
 			Zone: p.JSONNextHop.Zone,
 		},
 		JSONExpirationTimestamp: p.JSONExpirationTimestamp,
+		HeaderV2:                p.HeaderV2,
 		metadata:                p.metadata,
 	}
 }
@@ -134,16 +143,8 @@ func (p Path) String() string {
 }
 
 type PathInterface struct {
-	JSONIA addr.IA         `json:"ia"`
-	JSONID common.IFIDType `json:"id"`
-}
-
-func (i PathInterface) ID() common.IFIDType {
-	return i.JSONID
-}
-
-func (i PathInterface) IA() addr.IA {
-	return i.JSONIA
+	IA addr.IA         `json:"ia"`
+	ID common.IFIDType `json:"id"`
 }
 
 type pathMetadata struct {
@@ -191,7 +192,6 @@ func (c connector) Paths(_ context.Context, _, _ addr.IA,
 	flags sciond.PathReqFlags) ([]snet.Path, error) {
 
 	secondsElapsed := int(time.Since(c.creationTime).Seconds())
-	intMax := int(flags.PathCount)
 
 	var entry *Entry
 	for i := 0; i < len(c.script.Entries); i++ {
@@ -203,11 +203,7 @@ func (c connector) Paths(_ context.Context, _, _ addr.IA,
 	if entry == nil {
 		return nil, serrors.New("path not found")
 	}
-
-	if intMax > len(entry.Paths) {
-		intMax = len(entry.Paths)
-	}
-	return c.adapter(entry.Paths[:intMax]), nil
+	return c.adapter(entry.Paths), nil
 }
 
 func (c connector) adapter(paths []*Path) []snet.Path {
@@ -222,7 +218,7 @@ func (c connector) LocalIA(ctx context.Context) (addr.IA, error) {
 	return c.script.IA, nil
 }
 
-func (c connector) ASInfo(ctx context.Context, ia addr.IA) (*sciond.ASInfoReply, error) {
+func (c connector) ASInfo(ctx context.Context, ia addr.IA) (sciond.ASInfo, error) {
 	panic("not implemented")
 }
 
@@ -233,17 +229,17 @@ func (c connector) IFInfo(ctx context.Context,
 }
 
 func (c connector) SVCInfo(ctx context.Context,
-	svcTypes []proto.ServiceType) (*sciond.ServiceInfoReply, error) {
+	svcTypes []addr.HostSVC) (map[addr.HostSVC]string, error) {
 
 	panic("not implemented")
 }
 
-func (c connector) RevNotificationFromRaw(ctx context.Context, b []byte) (*sciond.RevReply, error) {
+func (c connector) RevNotificationFromRaw(ctx context.Context, b []byte) error {
 	panic("not implemented")
 }
 
 func (c connector) RevNotification(ctx context.Context,
-	sRevInfo *path_mgmt.SignedRevInfo) (*sciond.RevReply, error) {
+	sRevInfo *path_mgmt.SignedRevInfo) error {
 
 	panic("not implemented")
 }

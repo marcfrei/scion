@@ -22,7 +22,6 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"os/user"
 	"sync/atomic"
 
 	"github.com/syndtr/gocapability/capability"
@@ -109,8 +108,9 @@ func realMain() int {
 
 	// Start HTTP endpoints.
 	statusPages := service.StatusPages{
-		"info":   service.NewInfoHandler(),
-		"config": service.NewConfigHandler(cfg),
+		"info":      service.NewInfoHandler(),
+		"config":    service.NewConfigHandler(cfg),
+		"log/level": log.ConsoleLevel.ServeHTTP,
 	}
 	if err := statusPages.Register(http.DefaultServeMux, cfg.Sig.ID); err != nil {
 		log.Error("registering status pages", "err", err)
@@ -177,13 +177,6 @@ func setupTun() (io.ReadWriteCloser, error) {
 }
 
 func checkPerms() error {
-	u, err := user.Current()
-	if err != nil {
-		return common.NewBasicError("Error retrieving user", err)
-	}
-	if u.Uid == "0" && !cfg.Features.AllowRunAsRoot {
-		return serrors.New("Running as root is not allowed for security reasons")
-	}
 	caps, err := capability.NewPid(0)
 	if err != nil {
 		return common.NewBasicError("Error retrieving capabilities", err)

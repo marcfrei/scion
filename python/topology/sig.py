@@ -22,12 +22,12 @@ import toml
 from python.lib.util import write_file
 from python.topology.common import (
     ArgsBase,
-    DOCKER_USR_VOL,
     json_default,
     remote_nets,
     sciond_svc_name,
     SD_API_PORT,
-    SIG_CONFIG_NAME
+    SIG_CONFIG_NAME,
+    translate_features,
 )
 from python.topology.net import socket_address_str
 from python.topology.prometheus import SIG_PROM_PORT
@@ -54,7 +54,7 @@ class SIGGenerator(object):
         """
         self.args = args
         self.dc_conf = args.dc_conf
-        self.user_spec = os.environ.get('SCION_USERSPEC', '$LOGNAME')
+        self.user = '%d:%d' % (os.getuid(), os.getgid())
         self.output_base = os.environ.get('SCION_OUTPUT_BASE', os.getcwd())
         self.prefix = ''
 
@@ -71,17 +71,15 @@ class SIGGenerator(object):
     def _dispatcher_conf(self, topo_id, base):
         # Create dispatcher config
         entry = {
-            'image': 'scion_dispatcher',
+            'image': 'dispatcher',
             'container_name': 'scion_%sdisp_sig_%s' % (self.prefix, topo_id.file_fmt()),
-            'environment': {
-                'SU_EXEC_USERSPEC': self.user_spec,
-            },
+            'user': self.user,
             'networks': {},
             'volumes': [
-                *DOCKER_USR_VOL,
                 self._disp_vol(topo_id),
-                '%s:/share/conf:rw' % os.path.join(base, 'disp_sig_%s' % topo_id.file_fmt()),
-            ]
+                '%s:/share/conf:rw' % base,
+            ],
+            'command': ['--config', '/share/conf/disp_sig_%s.toml' % topo_id.file_fmt()],
         }
 
         net = self.args.networks['sig%s' % topo_id.file_fmt()][0]
@@ -94,26 +92,33 @@ class SIGGenerator(object):
         self.dc_conf['volumes'][vol_name] = None
 
     def _sig_dc_conf(self, topo_id, base):
+        setup_name = 'scion_sig_setup_%s' % topo_id.file_fmt()
+        disp_id = 'scion_disp_sig_%s' % topo_id.file_fmt()
+        self.dc_conf['services'][setup_name] = {
+            'image': 'tester:latest',
+            'depends_on': [disp_id],
+            'entrypoint': './sig_setup.sh',
+            'privileged': True,
+            'network_mode': 'service:%s' % disp_id,
+            'command': [remote_nets(self.args.networks, topo_id)],
+        }
         self.dc_conf['services']['scion_sig_%s' % topo_id.file_fmt()] = {
-            'image': 'scion_sig_acceptance:latest',
+            'image': 'posix-gateway:latest',
             'container_name': 'scion_%ssig_%s' % (self.prefix, topo_id.file_fmt()),
             'depends_on': [
-                'scion_disp_sig_%s' % topo_id.file_fmt(),
-                sciond_svc_name(topo_id)
+                disp_id,
+                sciond_svc_name(topo_id),
+                setup_name,
             ],
             'cap_add': ['NET_ADMIN'],
-            'privileged': True,
-            'environment': {
-                'SU_EXEC_USERSPEC': self.user_spec,
-            },
+            'user': self.user,
             'volumes': [
-                *DOCKER_USR_VOL,
                 self._disp_vol(topo_id),
                 '/dev/net/tun:/dev/net/tun',
-                '%s/sig%s:/share/conf' % (base, topo_id.file_fmt()),
+                '%s:/share/conf' % base,
             ],
-            'network_mode': 'service:scion_disp_sig_%s' % topo_id.file_fmt(),
-            'command': [remote_nets(self.args.networks, topo_id)]
+            'network_mode': 'service:%s' % disp_id,
+            'command': ['--config', '/share/conf/sig.toml'],
         }
 
     def _sig_json(self, topo_id):
@@ -125,8 +130,8 @@ class SIGGenerator(object):
             net = self.args.networks['sig%s' % t_id.file_fmt()][0]
             sig_cfg['ASes'][str(t_id)]['Nets'].append(net['net'])
 
-        cfg = os.path.join(topo_id.base_dir(self.args.output_dir), 'sig%s' % topo_id.file_fmt(),
-                           "cfg.json")
+        cfg = os.path.join(topo_id.base_dir(self.args.output_dir),
+                           "sig.json")
         contents_json = json.dumps(sig_cfg, default=json_default, indent=2)
         write_file(cfg, contents_json + '\n')
 
@@ -147,7 +152,7 @@ class SIGGenerator(object):
         sig_conf = {
             'sig': {
                 'id': name,
-                'sig_config': 'conf/cfg.json',
+                'sig_config': 'conf/sig.json',
                 'ip': str(net[ipv]),
             },
             'sciond_connection': {
@@ -161,9 +166,9 @@ class SIGGenerator(object):
             'metrics': {
                 'prometheus': '0.0.0.0:%s' % SIG_PROM_PORT
             },
-            'features': {},
+            'features': translate_features(self.args.features),
         }
-        path = os.path.join(topo_id.base_dir(self.args.output_dir), name, SIG_CONFIG_NAME)
+        path = os.path.join(topo_id.base_dir(self.args.output_dir), SIG_CONFIG_NAME)
         write_file(path, toml.dumps(sig_conf))
 
     def _disp_vol(self, topo_id):

@@ -27,6 +27,7 @@ COMMON_DIR = 'endhost'
 
 SCION_SERVICE_NAMES = (
     "control_service",
+    "discovery_service",
     "border_routers",
     "colibri_service",
 )
@@ -39,8 +40,6 @@ CO_CONFIG_NAME = 'co.toml'
 SD_CONFIG_NAME = 'sd.toml'
 DISP_CONFIG_NAME = 'disp.toml'
 SIG_CONFIG_NAME = 'sig.toml'
-
-DOCKER_USR_VOL = ['/etc/passwd:/etc/passwd:ro', '/etc/group:/etc/group:ro']
 
 SD_API_PORT = 30255
 
@@ -85,7 +84,7 @@ class TopoID(ISD_AS):
         return "%s-%s" % (self.isd_str(), self.as_file_fmt())
 
     def base_dir(self, out_dir):
-        return os.path.join(out_dir, self.ISD(), self.AS_file())
+        return os.path.join(out_dir, self.AS_file())
 
     def __lt__(self, other):
         return str(self) < str(other)
@@ -141,21 +140,9 @@ def prom_addr_dispatcher(docker, topo_id,
     return None
 
 
-def srv_iter(topo_dicts, out_dir, common=False):
-    for topo_id, as_topo in topo_dicts.items():
-        base = topo_id.base_dir(out_dir)
-        for service in SCION_SERVICE_NAMES:
-            for elem in as_topo[service]:
-                yield topo_id, as_topo, os.path.join(base, elem)
-        if common:
-            yield topo_id, as_topo, os.path.join(base, COMMON_DIR)
-
-
 def docker_image(args, image):
     if args.docker_registry:
         image = '%s/%s' % (args.docker_registry, image)
-    else:
-        image = 'scion_%s' % image
     if args.image_tag:
         image = '%s:%s' % (image, args.image_tag)
     return image
@@ -199,3 +186,8 @@ def json_default(o):
     if isinstance(o, AddressProxy):
         return str(o.ip)
     raise TypeError
+
+
+def translate_features(features):
+    f = dict(features)
+    return f

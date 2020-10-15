@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/ctrl/seg"
 	"github.com/scionproto/scion/go/lib/pathpol"
@@ -58,7 +57,7 @@ func segsToPs(segs seg.Segments, dir Direction) pathpol.PathSet {
 	ps := make(pathpol.PathSet, len(segs))
 	for _, seg := range segs {
 		sw := wrap(seg, dir)
-		ps[sw.Fingerprint()] = sw
+		ps[sw.key] = sw
 	}
 	return ps
 }
@@ -82,16 +81,21 @@ func wrap(seg *seg.PathSegment, dir Direction) segWrap {
 	intfs := make([]snet.PathInterface, 0, len(seg.ASEntries))
 	keyParts := make([]string, 0, len(seg.ASEntries))
 	for _, asEntry := range seg.ASEntries {
-		for _, hopEntry := range asEntry.HopEntries {
-			hopField := hopEntry.HopField
-			for _, ifid := range []uint16{hopField.ConsIngress, hopField.ConsEgress} {
-				if ifid != 0 {
-					intfs = append(intfs, pathInterface{
-						ia:   asEntry.IA(),
-						ifid: common.IFIDType(ifid),
-					})
-					keyParts = append(keyParts, fmt.Sprintf("%s#%d", asEntry.IA(), ifid))
-				}
+
+		hof := asEntry.HopEntry.HopField
+		interfaces := []uint16{hof.ConsIngress, hof.ConsEgress}
+
+		for _, peer := range asEntry.PeerEntries {
+			interfaces = append(interfaces, peer.HopField.ConsIngress)
+		}
+
+		for _, ifid := range interfaces {
+			if ifid != 0 {
+				intfs = append(intfs, snet.PathInterface{
+					IA: asEntry.Local,
+					ID: common.IFIDType(ifid),
+				})
+				keyParts = append(keyParts, fmt.Sprintf("%s#%d", asEntry.Local, ifid))
 			}
 		}
 	}
@@ -108,13 +112,4 @@ func wrap(seg *seg.PathSegment, dir Direction) segWrap {
 	}
 }
 
-func (s segWrap) Interfaces() []snet.PathInterface  { return s.intfs }
-func (s segWrap) Fingerprint() snet.PathFingerprint { return s.key }
-
-type pathInterface struct {
-	ia   addr.IA
-	ifid common.IFIDType
-}
-
-func (i pathInterface) IA() addr.IA         { return i.ia }
-func (i pathInterface) ID() common.IFIDType { return i.ifid }
+func (s segWrap) Interfaces() []snet.PathInterface { return s.intfs }
