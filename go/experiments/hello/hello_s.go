@@ -33,12 +33,13 @@ func main() {
 			RevocationHandler: sciond.RevHandler{Connector: sdc},
 		},
 	}
-	conn, localPort, err := pds.Register(ctx, localAddr.IA, localAddr.Host, addr.SvcNone)
+
+	conn, localPort, err := pds.Register(ctx, localAddr.IA, localAddr.Host, addr.SvcTS)
 	if err != nil {
-	log.Fatal("Failed to register server socket:", err)
+		log.Fatal("Failed to register server socket:", err)
 	}
 
-	log.Printf("Listening in %v on %v:%d - %v\n", localAddr.IA, localAddr.Host.IP, localPort, addr.SvcNone)
+	log.Printf("Listening in %v on %v:%d - %v\n", localAddr.IA, localAddr.Host.IP, localPort, addr.SvcTS)
 
 	for {
 		var pkt snet.Packet
