@@ -104,6 +104,8 @@ func protoSVCToAddr(svc proto.ServiceType) addr.HostSVC {
 		return addr.SvcCS
 	case proto.ServiceType_sig:
 		return addr.SvcSIG
+	case proto.ServiceType_ts:
+		return addr.SvcTS
 	default:
 		return addr.SvcNone
 	}
