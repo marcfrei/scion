@@ -223,7 +223,7 @@ func (s DaemonServer) services(ctx context.Context,
 	}
 	topo := s.TopoProvider.Get()
 	serviceTypes := []proto.ServiceType{proto.ServiceType_bs, proto.ServiceType_cs,
-		proto.ServiceType_ps, proto.ServiceType_sig}
+		proto.ServiceType_ps, proto.ServiceType_sig, proto.ServiceType_ts}
 	for _, t := range serviceTypes {
 		list := &sdpb.ListService{}
 		svcHosts := topo.MakeHostInfos(t)
