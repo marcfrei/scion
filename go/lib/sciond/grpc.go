@@ -220,7 +220,7 @@ func convertPath(p *sdpb.Path, dst addr.IA) (path.Path, error) {
 		})
 	}
 	return path.Path{
-		Dst:     dst,
+		Dst:     interfaces[len(interfaces) - 1].IA,
 		SPath:   sp,
 		NextHop: underlayA,
 		IFaces:  interfaces,
