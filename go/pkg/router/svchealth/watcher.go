@@ -13,7 +13,7 @@ import (
 	"github.com/scionproto/scion/go/lib/topology"
 )
 
-var supportedServices = []addr.HostSVC{addr.SvcDS, addr.SvcCS, addr.SvcSIG}
+var supportedServices = []addr.HostSVC{addr.SvcDS, addr.SvcCS, addr.SvcSIG, addr.SvcTS}
 
 // Discoverer discovers healthy service instances of different types.
 type Discoverer interface {
