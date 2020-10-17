@@ -51,7 +51,7 @@ func main() {
 		}
 		pld, ok := pkt.Payload.(snet.UDPPayload)
 		if !ok {
-			log.Printf("Failed to read packet payload,\n")
+			log.Printf("Failed to read packet payload\n")
 			continue
 		}
 		log.Printf("Received payload: \"%v\"\n", string(pld.Payload))

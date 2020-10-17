@@ -81,14 +81,11 @@ func main() {
 			},
 			Destination: snet.SCIONAddress{
 				IA: remoteAddr.IA,
-				// Host: addr.HostFromIP(remoteAddr.Host.IP),
 				Host: addr.SvcTS | addr.SVCMcast,
 			},
 			Path: p.Path(),
 			Payload: snet.UDPPayload{
 				SrcPort: localPort,
-				DstPort: uint16(remoteAddr.Host.Port),
-				// DstPort: 0,
 				Payload: []byte("Hello, world!"),
 			},
 		},
