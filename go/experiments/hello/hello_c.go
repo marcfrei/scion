@@ -48,9 +48,7 @@ func main() {
 	coreASes := make(map[addr.IA][]snet.Path)
 	if corePaths != nil {
 		for _, p := range corePaths {
-			ifcs := p.Interfaces()
-			dest := ifcs[len(ifcs) - 1].IA
-			coreASes[dest] = append(coreASes[dest], p)
+			coreASes[p.Destination()] = append(coreASes[p.Destination()], p)
 		}
 	}
 

@@ -5,7 +5,6 @@ import (
 	"flag"
 	"log"
 	"math/rand"
-	"net"
 	"sort"
 	"time"
 
@@ -14,8 +13,6 @@ import (
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/sock/reliable"
 	"github.com/scionproto/scion/go/lib/sock/reliable/reconnect"
-	"github.com/scionproto/scion/go/lib/spath"
-	"github.com/scionproto/scion/go/lib/topology"
 
 	"github.com/scionproto/scion/go/experiments/ts/ets"
 	"github.com/scionproto/scion/go/experiments/ts/tsp"
@@ -67,26 +64,6 @@ func newPacketDispatcher(c sciond.Connector) snet.PacketDispatcherService {
 		Dispatcher: reconnect.NewDispatcherService(reliable.NewDispatcher("")),
 		SCMPHandler: snet.DefaultSCMPHandler{
 			RevocationHandler: sciond.RevHandler{Connector: c},
-		},
-	}
-}
-
-func newPacket(localIA addr.IA, remoteIA addr.IA, path snet.Path,
-	payload time.Duration) *snet.Packet {
-	var dpPath *spath.Path
-	if path != nil {
-		dpPath = path.Path()
-	}
-	return &snet.Packet{
-		PacketInfo: snet.PacketInfo{
-			Destination: snet.SCIONAddress{
-				IA: remoteIA,
-				Host: addr.SvcTS | addr.SVCMcast,
-			},
-			Path: dpPath,
-			Payload: snet.UDPPayload{
-				Payload: []byte(payload.String()),
-			},
 		},
 	}
 }
@@ -300,20 +277,40 @@ func main() {
 						}
 						sp := ps[rand.Intn(len(ps))]
 						tsp.PropagatePacketTo(
-							newPacket(pathInfo.LocalIA, remoteIA, sp, clockOffset.d),
+							&snet.Packet{
+								PacketInfo: snet.PacketInfo{
+									Destination: snet.SCIONAddress{
+										IA: remoteIA,
+										Host: addr.SvcTS | addr.SVCMcast,
+									},
+									Path: sp.Path(),
+									Payload: snet.UDPPayload{
+										Payload: []byte(clockOffset.d.String()),
+									},
+								},
+							},
 							sp.UnderlayNextHop())
 					}
-					if !pathInfo.LocalIA.IsZero() {
-						if syncEntryForIA(syncEntries, pathInfo.LocalIA) == nil {
-							syncEntries = append(syncEntries, syncEntry{
-								ia: pathInfo.LocalIA,
-							})
-						}
-						for _, ip := range pathInfo.LocalTSHosts {
-							tsp.PropagatePacketTo(
-								newPacket(pathInfo.LocalIA, pathInfo.LocalIA, /* path: */ nil, clockOffset.d),
-								&net.UDPAddr{IP: ip, Port: topology.EndhostPort})
-						}
+
+					localSyncInfo := tsp.SyncInfo{
+						Source: snet.SCIONAddress{
+							IA: localAddr.IA,
+							Host: addr.HostFromIP(localAddr.Host.IP),
+						},
+						ClockOffset: clockOffset.d,
+					};
+					se := syncEntryForIA(syncEntries, localAddr.IA);
+					if se == nil {
+						syncEntries = append(syncEntries, syncEntry{
+							ia: localAddr.IA,
+						})
+						se = &syncEntries[len(syncEntries) - 1]
+					}
+					si := syncInfoForHost(se.syncInfos, addr.HostFromIP(localAddr.Host.IP))
+					if si != nil {
+						*si = localSyncInfo
+					} else {
+						se.syncInfos = append(se.syncInfos, localSyncInfo)
 					}
 
 					flag = flagUpdate

@@ -15,7 +15,7 @@ import (
 type PathInfo struct {
 	LocalIA addr.IA
 	CoreASes map[addr.IA][]snet.Path
-	LocalTSHosts map[string]net.IP
+	LocalTSHosts []*net.UDPAddr
 }
 
 var patherLog = log.New(ioutil.Discard, "[tsp/pather] ", log.LstdFlags)
@@ -56,21 +56,22 @@ func StartPather(c sciond.Connector, ctx context.Context) (<-chan PathInfo, erro
 					}
 				}
 
-				// svcInfoReply, err := c.SVCInfo(ctx,
-				// 	[]proto.ServiceType{proto.ServiceType_ts})
-				// if err != nil {
-				// 	patherLog.Printf("Failed to lookup local TS service info: %v\n", err)
-				// }
-				localTSHosts := make(map[string]net.IP)
-				// if svcInfoReply != nil {
-				// 	for _, i := range svcInfoReply.Entries[0].HostInfos {
-				// 		ip := i.Host().IP()
-				// 		localTSHosts[ip.String()] = ip
-				// 	}
-				// }
+				localSvcInfo, err := c.SVCInfo(ctx, []addr.HostSVC{addr.SvcTS})
+				if err != nil {
+					patherLog.Printf("Failed to lookup local TS service info: %v\n", err)
+				}
+				var localTSHosts []*net.UDPAddr
+				localSvcAddr, ok := localSvcInfo[addr.SvcTS]
+				if ok {
+					localSvcUdpAddr, err := net.ResolveUDPAddr("udp", localSvcAddr)
+					if err != nil {
+						patherLog.Printf("Failed to resolve local TS service addr: %v\n", err)
+					}
+					localTSHosts = append(localTSHosts, localSvcUdpAddr)
+				}
 
 				patherLog.Printf("Reachable local time services:\n")
-				for localTSHost := range localTSHosts {
+				for _, localTSHost := range localTSHosts {
 					patherLog.Printf("\t%v\n", localTSHost)
 				}
 
