@@ -1,5 +1,11 @@
 package main
 
+// typedef void (*data_callback)(char *data);
+// void makeCallback(char *data, data_callback cb) {
+//     cb(data);
+// }
+import "C"
+
 import (
 	"context"
 	"flag"
@@ -13,13 +19,7 @@ import (
 	"github.com/scionproto/scion/go/lib/sock/reliable/reconnect"
 )
 
-func main() {
-	var sciondAddr string
-	var localAddr snet.UDPAddr
-	flag.StringVar(&sciondAddr, "sciond", "", "SCIOND address")
-	flag.Var(&localAddr, "local", "Local address")
-	flag.Parse()
-
+func runServer(sciondAddr string, localAddr snet.UDPAddr, dataCallback func(data string)) {
 	var err error
 	ctx := context.Background()
 
@@ -54,6 +54,20 @@ func main() {
 			log.Printf("Failed to read packet payload\n")
 			continue
 		}
-		log.Printf("Received payload: \"%v\"\n", string(pld.Payload))
+		data := string(pld.Payload);
+		log.Printf("Received payload: \"%v\"\n", data)
+		if dataCallback != nil {
+			dataCallback(data)
+		}
 	}
+}
+
+func main() {
+	var sciondAddr string
+	var localAddr snet.UDPAddr
+	flag.StringVar(&sciondAddr, "sciond", "", "SCIOND address")
+	flag.Var(&localAddr, "local", "Local address")
+	flag.Parse()
+
+	runServer(sciondAddr, localAddr, nil)
 }

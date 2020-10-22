@@ -1,5 +1,7 @@
 package main
 
+import "C"
+
 import (
 	"context"
 	"flag"
@@ -12,15 +14,7 @@ import (
 	"github.com/scionproto/scion/go/lib/sock/reliable/reconnect"
 )
 
-func main() {
-	var sciondAddr string
-	var localAddr snet.UDPAddr
-	var remoteAddr snet.UDPAddr
-	flag.StringVar(&sciondAddr, "sciond", "", "SCIOND address")
-	flag.Var(&localAddr, "local", "Local address")
-	flag.Var(&remoteAddr, "remote", "Remote address")
-	flag.Parse()
-
+func sendHello(sciondAddr string, localAddr snet.UDPAddr, remoteAddr snet.UDPAddr) {
 	var err error
 	ctx := context.Background()
 
@@ -93,4 +87,31 @@ func main() {
 	if err != nil {
 		log.Printf("[%d] Failed to write packet: %v\n", err)
 	}
+}
+
+//export SendHello
+func SendHello(sciondAddr, local, remote *C.char) int {
+	localAddr, err := snet.ParseUDPAddr(C.GoString(local))
+	if err != nil {
+		return 1
+	}
+	remoteAddr, err := snet.ParseUDPAddr(C.GoString(remote))
+	if err != nil {
+		return 1
+	}
+
+	sendHello(C.GoString(sciondAddr), *localAddr, *remoteAddr)
+	return 0
+}
+
+func main() {
+	var sciondAddr string
+	var localAddr snet.UDPAddr
+	var remoteAddr snet.UDPAddr
+	flag.StringVar(&sciondAddr, "sciond", "", "SCIOND address")
+	flag.Var(&localAddr, "local", "Local address")
+	flag.Var(&remoteAddr, "remote", "Remote address")
+	flag.Parse()
+
+	sendHello(sciondAddr, localAddr, remoteAddr)
 }
