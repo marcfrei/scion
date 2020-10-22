@@ -8,3 +8,4 @@ Testing documentation:
    :maxdepth: 2
 
    crypto
+   mocks

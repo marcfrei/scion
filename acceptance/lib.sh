@@ -28,6 +28,13 @@ stop_infra() {
     ./scion.sh stop
 }
 
+build_binaries() {
+    rm bin/*
+    bazel build //:scion //:scion-ci
+    tar -kxf bazel-bin/scion.tar -C bin
+    tar -kxf bazel-bin/scion-ci.tar -C bin
+}
+
 build_docker_tester() {
     make -C docker test
 }
@@ -52,7 +59,7 @@ global_setup() {
     run_command stop_infra ${out_dir:+$out_dir/global_setup_pre_clean.out}
     find logs -mindepth 1 -maxdepth 1 -not -path '*/\.*' -exec rm -r {} +
     print_green "[-->-------]" "Building local code"
-    run_command make ${out_dir:+$out_dir/global_setup_make.out}
+    run_command build_binaries ${out_dir:+$out_dir/global_setup_make.out}
     print_green "[--->------]" "Building per-app docker images"
     run_command build_docker_perapp ${out_dir:+$out_dir/global_setup_docker_perapp.out}
     print_green "[---->-----]" "Building tester docker images"
@@ -106,6 +113,9 @@ global_run() {
     for i in $ACCEPTANCE_TESTS; do
         stats_total=$((stats_total+1))
         TEST_PROGRAM="$i/test"
+        if [ ! -f "$TEST_PROGRAM" ]; then
+            TEST_PROGRAM="$i/test.py"
+        fi
         TEST_NAME=$($TEST_PROGRAM name)
         print_green "[----------]" "Test found: $TEST_NAME"
         if [[ "$TEST_NAME" =~ $regex_matcher ]]; then
