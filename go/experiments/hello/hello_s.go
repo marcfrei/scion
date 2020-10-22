@@ -34,12 +34,12 @@ func runServer(sciondAddr string, localAddr snet.UDPAddr, dataCallback func(data
 		},
 	}
 
-	conn, localPort, err := pds.Register(ctx, localAddr.IA, localAddr.Host, addr.SvcTS)
+	conn, localPort, err := pds.Register(ctx, localAddr.IA, localAddr.Host, addr.SvcNone)
 	if err != nil {
 		log.Fatal("Failed to register server socket:", err)
 	}
 
-	log.Printf("Listening in %v on %v:%d - %v\n", localAddr.IA, localAddr.Host.IP, localPort, addr.SvcTS)
+	log.Printf("Listening in %v on %v:%d - %v\n", localAddr.IA, localAddr.Host.IP, localPort, addr.SvcNone)
 
 	for {
 		var pkt snet.Packet

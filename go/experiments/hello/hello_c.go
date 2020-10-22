@@ -29,33 +29,18 @@ func sendHello(sciondAddr string, localAddr snet.UDPAddr, remoteAddr snet.UDPAdd
 		},
 	}
 
-	localIA, err := sdc.LocalIA(ctx)
-	if err != nil {
-		log.Fatal("Failed to get local IA:", err)
-	}
-
-	corePaths, err := sdc.Paths(ctx,
-		addr.IA{I: 0, A: 0}, localIA, sciond.PathReqFlags{Refresh: true})
+	ps, err := sdc.Paths(ctx, remoteAddr.IA, localAddr.IA, sciond.PathReqFlags{Refresh: true})
 	if err != nil {
 		log.Fatal("Failed to lookup core paths: %v:", err)
 	}
-	coreASes := make(map[addr.IA][]snet.Path)
-	if corePaths != nil {
-		for _, p := range corePaths {
-			coreASes[p.Destination()] = append(coreASes[p.Destination()], p)
-		}
+
+	log.Printf("Available paths to %v:\n", remoteAddr.IA)
+	for _, p := range ps {
+		log.Printf("\t%v\n", p)
 	}
 
-	log.Printf("Reachable core ASes:\n")
-	for coreAS := range coreASes {
-		log.Printf("%v", coreAS)
-		for _, p := range coreASes[coreAS] {
-			log.Printf("\t%v\n", p)
-		}
-	}
-
-	p := coreASes[remoteAddr.IA][0];
-	log.Printf("Selected path to %v: %v\n", remoteAddr.IA, p)
+	sp := ps[0]
+	log.Printf("Selected path to %v: %v\n", remoteAddr.IA, sp)
 
 	localAddr.Host.Port = 0
 	conn, localPort, err := pds.Register(ctx, localAddr.IA, localAddr.Host, addr.SvcNone)
@@ -73,17 +58,18 @@ func sendHello(sciondAddr string, localAddr snet.UDPAddr, remoteAddr snet.UDPAdd
 			},
 			Destination: snet.SCIONAddress{
 				IA: remoteAddr.IA,
-				Host: addr.SvcTS | addr.SVCMcast,
+				Host: addr.HostFromIP(remoteAddr.Host.IP),
 			},
-			Path: p.Path(),
+			Path: sp.Path(),
 			Payload: snet.UDPPayload{
 				SrcPort: localPort,
+				DstPort: uint16(remoteAddr.Host.Port),
 				Payload: []byte("Hello, world!"),
 			},
 		},
 	}
 
-	err = conn.WriteTo(pkt, p.UnderlayNextHop())
+	err = conn.WriteTo(pkt, sp.UnderlayNextHop())
 	if err != nil {
 		log.Printf("[%d] Failed to write packet: %v\n", err)
 	}
