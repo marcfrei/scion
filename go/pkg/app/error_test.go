@@ -12,22 +12,45 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package logtest
+package app_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/scionproto/scion/go/lib/log"
+	"github.com/scionproto/scion/go/pkg/app"
 )
 
-// InitTestLogging prepares the config for testing.
-func InitTestLogging(cfg *log.Config) {}
+func TestCodeError(t *testing.T) {
+	base := fmt.Errorf("wrapped")
+	err := app.WithExitCode(base, 42)
+	assert.Equal(t, base.Error(), err.Error())
+	assert.Equal(t, 42, app.ExitCode(err))
+}
 
-// CheckTestLogging checks that the given config matches the sample values.
-func CheckTestLogging(t *testing.T, cfg *log.Config, id string) {
-	assert.Equal(t, log.DefaultConsoleLevel, cfg.Console.Level)
-	assert.Equal(t, "human", cfg.Console.Format)
-	assert.Equal(t, log.DefaultStacktraceLevel, cfg.Console.StacktraceLevel)
+func TestExitCode(t *testing.T) {
+	testCases := map[string]struct {
+		Err  error
+		Code int
+	}{
+		"nil": {
+			Code: 0,
+		},
+		"with code": {
+			Err:  app.WithExitCode(nil, 42),
+			Code: 42,
+		},
+		"without code": {
+			Err:  fmt.Errorf("some error"),
+			Code: -1,
+		},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.Code, app.ExitCode(tc.Err))
+		})
+	}
+
 }

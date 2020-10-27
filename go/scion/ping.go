@@ -37,25 +37,35 @@ import (
 func newPing(pather CommandPather) *cobra.Command {
 	var flags struct {
 		count       uint16
-		interval    time.Duration
-		size        uint
-		interactive bool
-		local       net.IP
-		refresh     bool
-		sciond      string
 		dispatcher  string
-		timeout     time.Duration
+		features    []string
+		interactive bool
+		interval    time.Duration
+		local       net.IP
 		maxMTU      bool
 		noColor     bool
-
-		features []string
+		refresh     bool
+		sciond      string
+		sequence    string
+		size        uint
+		timeout     time.Duration
 	}
 
 	var cmd = &cobra.Command{
-		Use:     "ping [flags] <remote>",
-		Short:   "Test connectivity to a remote SCION host using SCMP echo packets",
-		Example: fmt.Sprintf("  %[1]s ping 1-ff00:0:110,10.0.0.1", pather.CommandPath()),
-		Args:    cobra.ExactArgs(1),
+		Use:   "ping [flags] <remote>",
+		Short: "Test connectivity to a remote SCION host using SCMP echo packets",
+		Example: fmt.Sprintf(`  %[1]s ping 1-ff00:0:110,10.0.0.1
+  %[1]s ping 1-ff00:0:110,10.0.0.1 -c 5`, pather.CommandPath()),
+		Long: fmt.Sprintf(`'ping' test connectivity to a remote SCION host using SCMP echo packets.
+
+When the --count option is set, ping sends the specified number of SCMP echo packets
+and reports back the statistics.
+
+If no reply packet is received at all, ping will exit with code 1.
+On other errors, ping will exit with code 2.
+
+%s`, filterHelp),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			remote, err := snet.ParseUDPAddr(args[0])
 			if err != nil {
@@ -75,7 +85,8 @@ func newPing(pather CommandPather) *cobra.Command {
 				return err
 			}
 			path, err := app.ChoosePath(context.Background(), sd, remote.IA,
-				flags.interactive, flags.refresh, app.WithDisableColor(flags.noColor))
+				flags.interactive, flags.refresh, flags.sequence,
+				app.WithDisableColor(flags.noColor))
 			if err != nil {
 				return err
 			}
@@ -128,7 +139,7 @@ func newPing(pather CommandPather) *cobra.Command {
 				Remote:      remote,
 				PayloadSize: int(flags.size),
 				ErrHandler: func(err error) {
-					fmt.Fprintf(os.Stderr, "ERROR: %s", err)
+					fmt.Fprintf(os.Stderr, "ERROR: %s\n", err)
 				},
 				UpdateHandler: func(update ping.Update) {
 					var additional string
@@ -149,26 +160,30 @@ func newPing(pather CommandPather) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if stats.Received == 0 {
+				return app.WithExitCode(serrors.New("no reply packet received"), 1)
+			}
 			return nil
 		},
 	}
 
 	cmd.Flags().BoolVarP(&flags.interactive, "interactive", "i", false, "interactive mode")
-	cmd.Flags().BoolVar(&flags.noColor, "no_color", false, "disable colored output")
+	cmd.Flags().BoolVar(&flags.noColor, "no-color", false, "disable colored output")
 	cmd.Flags().DurationVar(&flags.timeout, "timeout", time.Second, "timeout per packet")
 	cmd.Flags().IPVar(&flags.local, "local", nil, "IP address to listen on")
 	cmd.Flags().StringVar(&flags.sciond, "sciond", sciond.DefaultAPIAddress, "SCION Daemon address")
+	cmd.Flags().StringVar(&flags.sequence, "sequence", "", "sequence space separated list of HPs")
 	cmd.Flags().StringVar(&flags.dispatcher, "dispatcher", reliable.DefaultDispPath,
 		"dispatcher socket")
 	cmd.Flags().BoolVar(&flags.refresh, "refresh", false, "set refresh flag for path request")
 	cmd.Flags().DurationVar(&flags.interval, "interval", time.Second, "time between packets")
 	cmd.Flags().Uint16VarP(&flags.count, "count", "c", 0, "total number of packets to send")
-	cmd.Flags().UintVarP(&flags.size, "payload_size", "s", 0,
+	cmd.Flags().UintVarP(&flags.size, "payload-size", "s", 0,
 		`number of bytes to be sent in addition to the SCION Header and SCMP echo header;
 the total size of the packet is still variable size due to the variable size of
 the SCION path.`,
 	)
-	cmd.Flags().BoolVar(&flags.maxMTU, "max_mtu", false,
+	cmd.Flags().BoolVar(&flags.maxMTU, "max-mtu", false,
 		`choose the payload size such that the sent SCION packet including the SCION Header,
 SCMP echo header and payload are equal to the MTU of the path. This flag overrides the
 'payload_size' flag.`)
