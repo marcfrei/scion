@@ -31,13 +31,6 @@ const (
 )
 
 const (
-	BR  = "BR"
-	CS  = "CS"
-	SB  = "SB"
-	RS  = "RS"
-	SIG = "SIG"
-	TS  = "TS"
-
 	CPService = "Control Plane Service"
 )
 
@@ -65,8 +58,6 @@ func (ifid *IFIDType) UnmarshalText(text []byte) error {
 	*ifid = IFIDType(i)
 	return nil
 }
-
-const IFIDBytes = 8
 
 func TypeOf(v interface{}) string {
 	t := reflect.TypeOf(v)
