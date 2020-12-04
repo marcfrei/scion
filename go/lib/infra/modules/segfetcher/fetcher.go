@@ -16,6 +16,7 @@ package segfetcher
 
 import (
 	"context"
+	"math/rand"
 	"net"
 	"time"
 
@@ -76,9 +77,9 @@ func (f *Fetcher) Fetch(ctx context.Context, reqs Requests, refresh bool) (Segme
 	// Forward and cache any requests that were not local / cached
 	fetchedSegs, err := f.Request(ctx, fetchReqs)
 	if err != nil {
-		return Segments{}, serrors.Wrap(errFetch, err)
+		err = serrors.Wrap(errFetch, err)
 	}
-	return append(loadedSegs, fetchedSegs...), nil
+	return append(loadedSegs, fetchedSegs...), err
 }
 
 func (f *Fetcher) Request(ctx context.Context, reqs Requests) (Segments, error) {
@@ -143,11 +144,17 @@ func (f *Fetcher) nextQuery(segs Segments) time.Time {
 // nearestNextQueryTime finds the nearest next query time in the interval spanned
 // by the minimum and the configured query interval.
 func (f *Fetcher) nearestNextQueryTime(now, nextQuery time.Time) time.Time {
+	// Adding +-10% random jitter
+	jitterPercent := time.Duration(rand.Intn(20) - 10)
+
 	if earliest := now.Add(minQueryInterval); nextQuery.Before(earliest) {
-		return earliest
+		jitter := minQueryInterval * jitterPercent / 100
+		return earliest.Add(jitter)
 	}
+
 	if latest := now.Add(f.QueryInterval); nextQuery.After(latest) {
-		return latest
+		jitter := f.QueryInterval * jitterPercent / 100
+		return latest.Add(jitter)
 	}
 	return nextQuery
 }

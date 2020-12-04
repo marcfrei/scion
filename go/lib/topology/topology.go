@@ -29,11 +29,13 @@ import (
 	"github.com/scionproto/scion/go/lib/serrors"
 	jsontopo "github.com/scionproto/scion/go/lib/topology/json"
 	"github.com/scionproto/scion/go/lib/topology/underlay"
-	"github.com/scionproto/scion/go/proto"
 )
 
 // EndhostPort is the underlay port that the dispatcher binds to on non-routers.
 const EndhostPort = underlay.EndhostPort
+
+// ErrAddressNotFound indicates the address was not found.
+var ErrAddressNotFound = serrors.New("address not found")
 
 type (
 	// RWTopology is the topology type for applications and libraries that need write
@@ -65,17 +67,19 @@ type (
 		BRNames   []string
 		IFInfoMap IfInfoMap
 
-		CS  IDAddrMap
-		DS  IDAddrMap
-		SIG map[string]GatewayInfo
-		TS  IDAddrMap
+		CS                        IDAddrMap
+		DS                        IDAddrMap
+		HiddenSegmentLookup       IDAddrMap
+		HiddenSegmentRegistration IDAddrMap
+		SIG                       map[string]GatewayInfo
+		TS                        IDAddrMap
 	}
 
 	// GatewayInfo describes a scion gateway.
 	GatewayInfo struct {
-		CtrlAddr *TopoAddr
-		DataAddr *net.UDPAddr
-		AllowIFs []common.IFIDType
+		CtrlAddr        *TopoAddr
+		DataAddr        *net.UDPAddr
+		AllowInterfaces []uint64
 	}
 
 	// BRInfo is a list of AS-wide unique interface IDs for a router. These IDs are also used
@@ -139,12 +143,14 @@ type (
 // NewRWTopology creates new empty Topo object, including all possible service maps etc.
 func NewRWTopology() *RWTopology {
 	return &RWTopology{
-		BR:        make(map[string]BRInfo),
-		CS:        make(IDAddrMap),
-		DS:        make(IDAddrMap),
-		SIG:       make(map[string]GatewayInfo),
-		TS:        make(IDAddrMap),
-		IFInfoMap: make(IfInfoMap),
+		BR:                        make(map[string]BRInfo),
+		CS:                        make(IDAddrMap),
+		DS:                        make(IDAddrMap),
+		HiddenSegmentLookup:       make(IDAddrMap),
+		HiddenSegmentRegistration: make(IDAddrMap),
+		SIG:                       make(map[string]GatewayInfo),
+		TS:                        make(IDAddrMap),
+		IFInfoMap:                 make(IfInfoMap),
 	}
 }
 
@@ -196,7 +202,7 @@ func (t *RWTopology) populateMeta(raw *jsontopo.Topology) error {
 		return err
 	}
 	if t.IA.IsWildcard() {
-		return common.NewBasicError("ISD-AS contains wildcard", nil, "isd_as", t.IA)
+		return serrors.New("ISD-AS contains wildcard", "isd_as", t.IA)
 	}
 	t.MTU = raw.MTU
 	t.Attributes = raw.Attributes
@@ -206,10 +212,10 @@ func (t *RWTopology) populateMeta(raw *jsontopo.Topology) error {
 func (t *RWTopology) populateBR(raw *jsontopo.Topology) error {
 	for name, rawBr := range raw.BorderRouters {
 		if rawBr.CtrlAddr == "" {
-			return common.NewBasicError("Missing Control Address", nil, "br", name)
+			return serrors.New("Missing Control Address", "br", name)
 		}
 		if rawBr.InternalAddr == "" {
-			return common.NewBasicError("Missing Internal Address", nil, "br", name)
+			return serrors.New("Missing Internal Address", "br", name)
 		}
 		ctrlAddr, err := rawAddrToTopoAddr(rawBr.CtrlAddr)
 		if err != nil {
@@ -229,7 +235,7 @@ func (t *RWTopology) populateBR(raw *jsontopo.Topology) error {
 			var err error
 			// Check that ifid is unique
 			if _, ok := t.IFInfoMap[ifid]; ok {
-				return common.NewBasicError("IFID already exists", nil, "ID", ifid)
+				return serrors.New("IFID already exists", "ID", ifid)
 			}
 			brInfo.IFIDs = append(brInfo.IFIDs, ifid)
 			ifinfo := IFInfo{
@@ -309,11 +315,18 @@ func (t *RWTopology) populateServices(raw *jsontopo.Topology) error {
 	if err != nil {
 		return serrors.WrapStr("unable to extract DS address", err)
 	}
+	t.HiddenSegmentLookup, err = svcMapFromRaw(raw.HiddenSegmentLookup)
+	if err != nil {
+		return serrors.WrapStr("unable to extract hidden segment lookup address", err)
+	}
+	t.HiddenSegmentRegistration, err = svcMapFromRaw(raw.HiddenSegmentReg)
+	if err != nil {
+		return serrors.WrapStr("unable to extract hidden segment registration address", err)
+	}
 	t.TS, err = svcMapFromRaw(raw.TimeServices)
 	if err != nil {
 		return serrors.WrapStr("unable to extract TS address", err)
 	}
-
 	return nil
 }
 
@@ -325,49 +338,53 @@ func (t *RWTopology) Active(now time.Time) bool {
 
 // GetTopoAddr returns the address information for the process of the requested type with the
 // requested ID.
-func (t *RWTopology) GetTopoAddr(id string, svc proto.ServiceType) (*TopoAddr, error) {
+func (t *RWTopology) GetTopoAddr(id string, svc ServiceType) (*TopoAddr, error) {
 	svcInfo, err := t.getSvcInfo(svc)
 	if err != nil {
 		return nil, err
 	}
 	topoAddr := svcInfo.idTopoAddrMap.GetByID(id)
 	if topoAddr == nil {
-		return nil, common.NewBasicError("Element not found", nil, "id", id)
+		return nil, serrors.New("Element not found", "id", id)
 	}
 	return topoAddr, nil
 }
 
-// GetAllTopoAddrs returns the address information of all processes of the requested type.
-func (t *RWTopology) GetAllTopoAddrs(svc proto.ServiceType) ([]TopoAddr, error) {
+// getAllTopoAddrs returns the address information of all processes of the requested type.
+func (t *RWTopology) getAllTopoAddrs(svc ServiceType) ([]TopoAddr, error) {
 	svcInfo, err := t.getSvcInfo(svc)
 	if err != nil {
 		return nil, err
 	}
 	topoAddrs := svcInfo.getAllTopoAddrs()
 	if topoAddrs == nil {
-		return nil, serrors.New("Address not found")
+		return nil, ErrAddressNotFound
 	}
 	return topoAddrs, nil
 }
 
-func (t *RWTopology) getSvcInfo(svc proto.ServiceType) (*svcInfo, error) {
+func (t *RWTopology) getSvcInfo(svc ServiceType) (*svcInfo, error) {
 	switch svc {
-	case proto.ServiceType_unset:
-		return nil, serrors.New("Service type unset")
-	case proto.ServiceType_ds:
+	case Unknown:
+		return nil, serrors.New("service type unknown")
+	case Discovery:
 		return &svcInfo{idTopoAddrMap: t.DS}, nil
-	case proto.ServiceType_bs, proto.ServiceType_cs, proto.ServiceType_ps:
+	case Control:
 		return &svcInfo{idTopoAddrMap: t.CS}, nil
-	case proto.ServiceType_sig:
+	case HiddenSegmentLookup:
+		return &svcInfo{idTopoAddrMap: t.HiddenSegmentLookup}, nil
+	case HiddenSegmentRegistration:
+		return &svcInfo{idTopoAddrMap: t.HiddenSegmentRegistration}, nil
+	case Gateway:
 		m := make(IDAddrMap)
 		for k, v := range t.SIG {
 			m[k] = *v.CtrlAddr
 		}
 		return &svcInfo{idTopoAddrMap: m}, nil
-	case proto.ServiceType_ts:
+	case Time:
 		return &svcInfo{idTopoAddrMap: t.TS}, nil
 	default:
-		return nil, common.NewBasicError("Unsupported service type", nil, "type", svc)
+		return nil, serrors.New("unsupported service type", "type", svc)
 	}
 }
 
@@ -376,7 +393,6 @@ func (t *RWTopology) Copy() *RWTopology {
 	if t == nil {
 		return nil
 	}
-
 	return &RWTopology{
 		Timestamp:  t.Timestamp,
 		IA:         t.IA,
@@ -387,10 +403,12 @@ func (t *RWTopology) Copy() *RWTopology {
 		BRNames:   append(t.BRNames[:0:0], t.BRNames...),
 		IFInfoMap: t.IFInfoMap.copy(),
 
-		CS:  t.CS.copy(),
-		DS:  t.DS.copy(),
-		SIG: copySIGMap(t.SIG),
-		TS:  t.TS.copy(),
+		CS:                        t.CS.copy(),
+		DS:                        t.DS.copy(),
+		SIG:                       copySIGMap(t.SIG),
+		HiddenSegmentLookup:       t.HiddenSegmentLookup.copy(),
+		HiddenSegmentRegistration: t.HiddenSegmentRegistration.copy(),
+		TS:                        t.TS.copy(),
 	}
 }
 
@@ -494,14 +512,11 @@ func gatewayMapFromRaw(ras map[string]*jsontopo.GatewayInfo) (map[string]Gateway
 			return nil, serrors.WrapStr("could not parse data address", err,
 				"address", svc.DataAddr, "process_name", name)
 		}
-		var ifs []common.IFIDType
-		for _, i := range svc.Interfaces {
-			ifs = append(ifs, common.IFIDType(i))
-		}
+
 		ret[name] = GatewayInfo{
-			CtrlAddr: c,
-			DataAddr: d,
-			AllowIFs: ifs,
+			CtrlAddr:        c,
+			DataAddr:        d,
+			AllowInterfaces: svc.Interfaces,
 		}
 	}
 	return ret, nil
@@ -535,14 +550,14 @@ func (i IFInfo) CheckLinks(isCore bool, brName string) error {
 		switch i.LinkType {
 		case Core, Child:
 		default:
-			return common.NewBasicError("Illegal link type for core AS", nil,
+			return serrors.New("Illegal link type for core AS",
 				"type", i.LinkType, "br", brName)
 		}
 	} else {
 		switch i.LinkType {
 		case Parent, Child, Peer:
 		default:
-			return common.NewBasicError("Illegal link type for non-core AS", nil,
+			return serrors.New("Illegal link type for non-core AS",
 				"type", i.LinkType, "br", brName)
 		}
 	}

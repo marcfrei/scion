@@ -159,7 +159,7 @@ func Run(ctx context.Context, dst addr.IA, cfg Config) (*Result, error) {
 	if !cfg.NoProbe {
 		// Resolve local IP in case it is not configured.
 		if localIP = cfg.Local; localIP == nil {
-			localIP, err = findDefaultLocalIP(ctx, sdConn)
+			localIP, err = addrutil.DefaultLocalIP(ctx, sdConn)
 			if err != nil {
 				return nil, serrors.WrapStr("failed to determine local IP", err)
 			}
@@ -175,10 +175,13 @@ func Run(ctx context.Context, dst addr.IA, cfg Config) (*Result, error) {
 		}
 	}
 	app.SortPaths(paths)
-	res := &Result{Destination: dst}
+	res := &Result{
+		Destination: dst,
+		Paths:       []Path{},
+	}
 	for _, path := range paths {
 		fingerprint := "local"
-		if len(path.Interfaces()) > 0 {
+		if len(path.Metadata().Interfaces) > 0 {
 			fp := snet.Fingerprint(path).String()
 			fingerprint = fp[:16]
 		}
@@ -190,12 +193,12 @@ func Run(ctx context.Context, dst addr.IA, cfg Config) (*Result, error) {
 			FullPath:    path,
 			Fingerprint: fingerprint,
 			NextHop:     nextHop,
-			Expiry:      path.Metadata().Expiry(),
-			MTU:         path.Metadata().MTU(),
+			Expiry:      path.Metadata().Expiry,
+			MTU:         path.Metadata().MTU,
 			Local:       localIP,
 			Hops:        []Hop{},
 		}
-		for _, hop := range path.Interfaces() {
+		for _, hop := range path.Metadata().Interfaces {
 			rpath.Hops = append(rpath.Hops, Hop{IA: hop.IA, IfID: hop.ID})
 		}
 		if status, ok := statuses[pathprobe.PathKey(path)]; ok {
@@ -205,31 +208,4 @@ func Run(ctx context.Context, dst addr.IA, cfg Config) (*Result, error) {
 		res.Paths = append(res.Paths, rpath)
 	}
 	return res, nil
-}
-
-// TODO(matzf): this is a simple, hopefully temporary, workaround to not having
-// wildcard addresses in snet.
-// Here we just use a seemingly sensible default IP, but in the general case
-// the local IP would depend on the next hop of selected path. This approach
-// will not work in more complicated setups where e.g. different network
-// interface are used to talk to different AS interfaces.
-// Once a available, a wildcard address should be used and this should simply
-// be removed.
-//
-// findDefaultLocalIP returns _a_ IP of this host in the local AS.
-func findDefaultLocalIP(ctx context.Context, sciondConn sciond.Connector) (net.IP, error) {
-	hostInLocalAS, err := findAnyHostInLocalAS(ctx, sciondConn)
-	if err != nil {
-		return nil, err
-	}
-	return addrutil.ResolveLocal(hostInLocalAS)
-}
-
-// findAnyHostInLocalAS returns the IP address of some (infrastructure) host in the local AS.
-func findAnyHostInLocalAS(ctx context.Context, sciondConn sciond.Connector) (net.IP, error) {
-	addr, err := sciond.TopoQuerier{Connector: sciondConn}.UnderlayAnycast(ctx, addr.SvcCS)
-	if err != nil {
-		return nil, err
-	}
-	return addr.IP, nil
 }

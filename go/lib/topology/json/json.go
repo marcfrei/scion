@@ -68,12 +68,14 @@ type Topology struct {
 	MTU            int    `json:"mtu"`
 	// Attributes are the primary AS attributes as described in
 	// https://github.com/scionproto/scion/blob/master/doc/ControlPlanePKI.md#primary-ases
-	Attributes       []Attribute             `json:"attributes"`
-	BorderRouters    map[string]*BRInfo      `json:"border_routers,omitempty"`
-	ControlService   map[string]*ServerInfo  `json:"control_service,omitempty"`
-	DiscoveryService map[string]*ServerInfo  `json:"discovery_service,omitempty"`
-	SIG              map[string]*GatewayInfo `json:"sigs,omitempty"`
-	TimeServices     map[string]*ServerInfo  `json:"time_services,omitempty"`
+	Attributes          []Attribute             `json:"attributes"`
+	BorderRouters       map[string]*BRInfo      `json:"border_routers,omitempty"`
+	ControlService      map[string]*ServerInfo  `json:"control_service,omitempty"`
+	DiscoveryService    map[string]*ServerInfo  `json:"discovery_service,omitempty"`
+	HiddenSegmentLookup map[string]*ServerInfo  `json:"hidden_segment_lookup_service,omitempty"`
+	HiddenSegmentReg    map[string]*ServerInfo  `json:"hidden_segment_registration_service,omitempty"`
+	SIG                 map[string]*GatewayInfo `json:"sigs,omitempty"`
+	TimeServices        map[string]*ServerInfo  `json:"time_services,omitempty"`
 }
 
 // ServerInfo contains the information for a SCION application running in the local AS.
@@ -90,9 +92,9 @@ type BRInfo struct {
 
 // GatewayInfo contains SCION gateway information.
 type GatewayInfo struct {
-	CtrlAddr   string `json:"ctrl_addr"`
-	DataAddr   string `json:"data_addr"`
-	Interfaces []int  `json:"allow_interfaces,omitempty"`
+	CtrlAddr   string   `json:"ctrl_addr"`
+	DataAddr   string   `json:"data_addr"`
+	Interfaces []uint64 `json:"allow_interfaces,omitempty"`
 }
 
 // BRInterface contains the information for an data-plane BR socket that is external (i.e., facing

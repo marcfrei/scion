@@ -15,13 +15,14 @@
 package addrutil
 
 import (
+	"context"
 	"encoding/binary"
 	"net"
 
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/ctrl/seg"
+	"github.com/scionproto/scion/go/lib/sciond"
 	"github.com/scionproto/scion/go/lib/serrors"
-	"github.com/scionproto/scion/go/lib/slayers"
 	"github.com/scionproto/scion/go/lib/slayers/path"
 	"github.com/scionproto/scion/go/lib/slayers/path/scion"
 	"github.com/scionproto/scion/go/lib/snet"
@@ -87,11 +88,30 @@ func (p Pather) GetPath(svc addr.HostSVC, ps *seg.PathSegment) (*snet.SVCAddr, e
 	}
 	return &snet.SVCAddr{
 		IA:      ps.FirstIA(),
-		Path:    spath.Path{Raw: raw, Type: slayers.PathTypeSCION},
+		Path:    spath.Path{Raw: raw, Type: scion.PathType},
 		NextHop: nextHop,
 		SVC:     svc,
 	}, nil
 
+}
+
+// DefaultLocalIP returns _an_ IP of this host in the local AS.
+//
+// This returns a sensible but arbitrary local IP. In the general case the
+// local IP would depend on the next hop of selected path. This approach will
+// not work in more complicated setups where e.g. different network interfaces
+// are used to talk to different AS interfaces.
+//
+// This is a simple workaround for not being able to use wildcard addresses
+// with snet. Once available, a wildcard address should be used instead and
+// this should be removed.
+func DefaultLocalIP(ctx context.Context, sdConn sciond.Connector) (net.IP, error) {
+	// Choose CS as default routing "target". Using any of the interfaces would also make sense.
+	csAddr, err := sciond.TopoQuerier{Connector: sdConn}.UnderlayAnycast(ctx, addr.SvcCS)
+	if err != nil {
+		return nil, err
+	}
+	return ResolveLocal(csAddr.IP)
 }
 
 // ResolveLocal returns the local IP address used for traffic destined to dst.

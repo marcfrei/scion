@@ -64,12 +64,12 @@ package reliable
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/scionproto/scion/go/lib/addr"
-	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/prom"
 	"github.com/scionproto/scion/go/lib/serrors"
@@ -182,7 +182,7 @@ func register(ctx context.Context, dispatcher string, ia addr.IA, public *net.UD
 	}
 
 	type RegistrationReturn struct {
-		port int
+		port uint16
 		err  error
 	}
 	resultChannel := make(chan RegistrationReturn)
@@ -204,6 +204,10 @@ func register(ctx context.Context, dispatcher string, ia addr.IA, public *net.UD
 			conn.Close()
 			return nil, 0, registrationReturn.err
 		}
+		if public.Port < 0 || public.Port > math.MaxUint16 {
+			return nil, 0, serrors.New(fmt.Sprintf("invalid port, range [0 - %v]", math.MaxUint16),
+				"requested", public.Port)
+		}
 		if public.Port != 0 && public.Port != int(registrationReturn.port) {
 			conn.Close()
 			return nil, 0, serrors.New("port mismatch", "requested", public.Port,
@@ -211,7 +215,7 @@ func register(ctx context.Context, dispatcher string, ia addr.IA, public *net.UD
 		}
 		// Disable deadline to not affect future I/O
 		conn.SetDeadline(time.Time{})
-		return conn, uint16(registrationReturn.port), nil
+		return conn, registrationReturn.port, nil
 	case <-ctx.Done():
 		// Unblock registration worker I/O
 		conn.Close()
@@ -226,7 +230,7 @@ func register(ctx context.Context, dispatcher string, ia addr.IA, public *net.UD
 	}
 }
 
-func registrationExchange(conn *Conn, reg *Registration) (int, error) {
+func registrationExchange(conn *Conn, reg *Registration) (uint16, error) {
 	b := make([]byte, 1500)
 	n, err := reg.SerializeTo(b)
 	if err != nil {
@@ -249,7 +253,7 @@ func registrationExchange(conn *Conn, reg *Registration) (int, error) {
 		conn.Close()
 		return 0, err
 	}
-	return int(c.Port), nil
+	return c.Port, nil
 
 }
 
@@ -338,7 +342,7 @@ type Listener struct {
 func Listen(laddr string) (*Listener, error) {
 	l, err := net.Listen("unix", laddr)
 	if err != nil {
-		return nil, common.NewBasicError("Unable to listen on address", err, "addr", laddr)
+		return nil, serrors.WrapStr("Unable to listen on address", err, "addr", laddr)
 	}
 	return &Listener{l.(*net.UnixListener)}, nil
 }

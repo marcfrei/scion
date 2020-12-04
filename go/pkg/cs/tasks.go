@@ -29,6 +29,7 @@ import (
 	"github.com/scionproto/scion/go/lib/ctrl/seg"
 	"github.com/scionproto/scion/go/lib/infra/modules/cleaner"
 	"github.com/scionproto/scion/go/lib/infra/modules/seghandler"
+	"github.com/scionproto/scion/go/lib/metrics"
 	"github.com/scionproto/scion/go/lib/pathdb"
 	"github.com/scionproto/scion/go/lib/periodic"
 	"github.com/scionproto/scion/go/lib/revcache"
@@ -52,6 +53,7 @@ type TasksConfig struct {
 	BeaconStore     Store
 	Signer          seg.Signer
 	Inspector       trust.Inspector
+	Metrics         *Metrics
 
 	MACGen       func() hash.Hash
 	TopoProvider topology.Provider
@@ -81,6 +83,9 @@ func (t *TasksConfig) Originator() *periodic.Runner {
 		Signer:       t.Signer,
 		Tick:         beaconing.NewTick(t.OriginationInterval),
 	}
+	if t.Metrics != nil {
+		s.Originated = metrics.NewPromCounter(t.Metrics.BeaconingOriginatedTotal)
+	}
 	return periodic.Start(s, 500*time.Millisecond, t.OriginationInterval)
 }
 
@@ -100,41 +105,68 @@ func (t *TasksConfig) Propagator() *periodic.Runner {
 		Core:         topo.Core(),
 		Tick:         beaconing.NewTick(t.PropagationInterval),
 	}
+	if t.Metrics != nil {
+		p.Propagated = metrics.NewPromCounter(t.Metrics.BeaconingPropagatedTotal)
+		p.InternalErrors = metrics.NewPromCounter(t.Metrics.BeaconingPropagatorInternalErrorsTotal)
+	}
 	return periodic.Start(p, 500*time.Millisecond, t.PropagationInterval)
 }
 
-// Registrars starts periodic segment registration tasks.
-func (t *TasksConfig) Registrars() []*periodic.Runner {
+// SegmentWriters starts periodic segment registration tasks.
+func (t *TasksConfig) SegmentWriters() []*periodic.Runner {
 	topo := t.TopoProvider.Get()
 	if topo.Core() {
-		return []*periodic.Runner{t.registrar(topo, seg.TypeCore, beacon.CoreRegPolicy)}
+		return []*periodic.Runner{t.segmentWriter(topo, seg.TypeCore, beacon.CoreRegPolicy)}
 	}
 	return []*periodic.Runner{
-		t.registrar(topo, seg.TypeDown, beacon.DownRegPolicy),
-		t.registrar(topo, seg.TypeUp, beacon.UpRegPolicy),
+		t.segmentWriter(topo, seg.TypeDown, beacon.DownRegPolicy),
+		t.segmentWriter(topo, seg.TypeUp, beacon.UpRegPolicy),
 	}
 }
 
-func (t *TasksConfig) registrar(topo topology.Topology, segType seg.Type,
+func (t *TasksConfig) segmentWriter(topo topology.Topology, segType seg.Type,
 	policyType beacon.PolicyType) *periodic.Runner {
 
-	r := &beaconing.Registrar{
-		Extender: t.extender("registrar", topo.IA(), topo.MTU(), func() uint8 {
-			return t.BeaconStore.MaxExpTime(policyType)
-		}),
+	var internalErr, registered metrics.Counter
+	if t.Metrics != nil {
+		internalErr = metrics.NewPromCounter(t.Metrics.BeaconingRegistrarInternalErrorsTotal)
+		registered = metrics.NewPromCounter(t.Metrics.BeaconingRegisteredTotal)
+	}
+	var writer beaconing.Writer
+	if segType != seg.TypeDown {
+		writer = &beaconing.LocalWriter{
+			InternalErrors: metrics.CounterWith(internalErr, "seg_type", segType.String()),
+			Registered:     registered,
+			Type:           segType,
+			Intfs:          t.Intfs,
+			Extender: t.extender("registrar", topo.IA(), topo.MTU(), func() uint8 {
+				return t.BeaconStore.MaxExpTime(policyType)
+			}),
+			Store: &seghandler.DefaultStorage{PathDB: t.PathDB},
+		}
+	} else {
+		writer = &beaconing.RemoteWriter{
+			InternalErrors: metrics.CounterWith(internalErr, "seg_type", segType.String()),
+			Registered:     registered,
+			Type:           segType,
+			Intfs:          t.Intfs,
+			Extender: t.extender("registrar", topo.IA(), topo.MTU(), func() uint8 {
+				return t.BeaconStore.MaxExpTime(policyType)
+			}),
+			RPC: t.SegmentRegister,
+			Pather: addrutil.Pather{
+				UnderlayNextHop: func(ifID uint16) (*net.UDPAddr, bool) {
+					return t.TopoProvider.Get().UnderlayNextHop2(common.IFIDType(ifID))
+				},
+			},
+		}
+	}
+	r := &beaconing.WriteScheduler{
 		Provider: t.BeaconStore,
-		Store:    &seghandler.DefaultStorage{PathDB: t.PathDB},
-		RPC:      t.SegmentRegister,
-		IA:       topo.IA(),
-		Signer:   t.Signer,
 		Intfs:    t.Intfs,
 		Type:     segType,
-		Pather: addrutil.Pather{
-			UnderlayNextHop: func(ifID uint16) (*net.UDPAddr, bool) {
-				return t.TopoProvider.Get().UnderlayNextHop2(common.IFIDType(ifID))
-			},
-		},
-		Tick: beaconing.NewTick(t.RegistrationInterval),
+		Writer:   writer,
+		Tick:     beaconing.NewTick(t.RegistrationInterval),
 	}
 	return periodic.Start(r, 500*time.Millisecond, t.RegistrationInterval)
 }
@@ -168,19 +200,19 @@ func StartTasks(cfg TasksConfig) (*Tasks, error) {
 	beaconCleaner := newBeaconCleaner(cfg.BeaconStore)
 	revCleaner := newRevocationCleaner(cfg.BeaconStore)
 
-	segCleaner := pathdb.NewCleaner(cfg.PathDB, "ps_segments")
-	segRevCleaner := revcache.NewCleaner(cfg.RevCache, "ps_revocation")
+	segCleaner := pathdb.NewCleaner(cfg.PathDB, "control_pathstorage_segments")
+	segRevCleaner := revcache.NewCleaner(cfg.RevCache, "control_pathstorage_revocation")
 	return &Tasks{
 		Originator: cfg.Originator(),
 		Propagator: cfg.Propagator(),
-		Registrars: cfg.Registrars(),
+		Registrars: cfg.SegmentWriters(),
 		BeaconCleaner: periodic.Start(
 			periodic.Func{
 				Task: func(ctx context.Context) {
 					beaconCleaner.Run(ctx)
 					revCleaner.Run(ctx)
 				},
-				TaskName: "beaconstorage_cleaner",
+				TaskName: "control_beaconstorage_cleaner",
 			},
 			30*time.Second,
 			30*time.Second,
@@ -191,6 +223,7 @@ func StartTasks(cfg TasksConfig) (*Tasks, error) {
 					segCleaner.Run(ctx)
 					segRevCleaner.Run(ctx)
 				},
+				TaskName: "control_pathstorage_cleaner",
 			},
 			10*time.Second,
 			10*time.Second,
@@ -269,7 +302,7 @@ type expiredBeaconsDeleter interface {
 func newBeaconCleaner(s expiredBeaconsDeleter) *cleaner.Cleaner {
 	return cleaner.New(func(ctx context.Context) (int, error) {
 		return s.DeleteExpiredBeacons(ctx)
-	}, "bs_beacon")
+	}, "control_beaconstorage_beacon")
 }
 
 // expiredRevocationsDeleter deletes expired Revocations from the store.
@@ -282,5 +315,5 @@ type expiredRevocationsDeleter interface {
 func newRevocationCleaner(s expiredRevocationsDeleter) *cleaner.Cleaner {
 	return cleaner.New(func(ctx context.Context) (int, error) {
 		return s.DeleteExpiredRevocations(ctx)
-	}, "bs_revocation")
+	}, "control_beaconstorage_revocation")
 }

@@ -22,7 +22,7 @@ import (
 
 	"github.com/google/gopacket/layers"
 
-	"github.com/scionproto/scion/go/lib/common"
+	"github.com/scionproto/scion/go/lib/serrors"
 )
 
 // IPv4Predicate describes a single test on various IPv4 packet fields.
@@ -71,7 +71,7 @@ func (m *IPv4MatchSource) UnmarshalJSON(b []byte) error {
 	}
 	_, network, err := net.ParseCIDR(s)
 	if err != nil {
-		return common.NewBasicError("Unable to parse MatchSource operand", err)
+		return serrors.WrapStr("Unable to parse MatchSource operand", err)
 	}
 	m.Net = network
 	return nil
@@ -115,7 +115,7 @@ func (m *IPv4MatchDestination) UnmarshalJSON(b []byte) error {
 	}
 	_, network, err := net.ParseCIDR(s)
 	if err != nil {
-		return common.NewBasicError("Unable to parse MatchDestination operand", err)
+		return serrors.WrapStr("Unable to parse MatchDestination operand", err)
 	}
 	m.Net = network
 	return nil
@@ -199,5 +199,45 @@ func (m *IPv4MatchDSCP) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	m.DSCP = uint8(i)
+	return nil
+}
+
+var _ IPv4Predicate = (*IPv4MatchProtocol)(nil)
+
+// IPv4Matchprotocol checks whether the the L4 protocol matches.
+type IPv4MatchProtocol struct {
+	Protocol uint8
+}
+
+func (m *IPv4MatchProtocol) Type() string {
+	return "MatchProtocol"
+}
+
+func (m *IPv4MatchProtocol) Eval(p *layers.IPv4) bool {
+	return m.Protocol == uint8(p.Protocol)
+}
+
+func (m *IPv4MatchProtocol) String() string {
+	return fmt.Sprintf("protocol=%s", layers.IPProtocolMetadata[m.Protocol].Name)
+}
+
+func (m *IPv4MatchProtocol) MarshalJSON() ([]byte, error) {
+	return json.Marshal(
+		jsonContainer{
+			"Protocol": layers.IPProtocolMetadata[m.Protocol].Name,
+		},
+	)
+}
+
+func (m *IPv4MatchProtocol) UnmarshalJSON(b []byte) error {
+	s, err := unmarshalStringField(b, "Protocol", "Protocol")
+	if err != nil {
+		return err
+	}
+	n, err := protocolNameToNumber(s)
+	if err != nil {
+		return err
+	}
+	m.Protocol = n
 	return nil
 }

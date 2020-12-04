@@ -17,7 +17,6 @@ package sciond
 import (
 	"context"
 	"net"
-	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -26,10 +25,11 @@ import (
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/ctrl/path_mgmt"
 	"github.com/scionproto/scion/go/lib/serrors"
-	"github.com/scionproto/scion/go/lib/slayers"
+	"github.com/scionproto/scion/go/lib/slayers/path/scion"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/snet/path"
 	"github.com/scionproto/scion/go/lib/spath"
+	"github.com/scionproto/scion/go/lib/topology"
 	libgrpc "github.com/scionproto/scion/go/pkg/grpc"
 	sdpb "github.com/scionproto/scion/go/pkg/proto/daemon"
 )
@@ -136,7 +136,7 @@ func (c grpcConn) SVCInfo(ctx context.Context, _ []addr.HostSVC) (map[addr.HostS
 	}
 	result := make(map[addr.HostSVC]string)
 	for st, si := range response.Services {
-		svc := addr.HostSVCFromString(strings.ToUpper(st))
+		svc := topoServiceTypeToSVCAddr(topology.ServiceTypeFromString(st))
 		if svc == addr.SvcNone || len(si.Services) == 0 {
 			continue
 		}
@@ -193,9 +193,9 @@ func convertPath(p *sdpb.Path, dst addr.IA) (path.Path, error) {
 	if len(p.Interfaces) == 0 {
 		return path.Path{
 			Dst: dst,
-			Meta: path.PathMetadata{
-				Mtu: uint16(p.Mtu),
-				Exp: expiry,
+			Meta: snet.PathMetadata{
+				MTU:    uint16(p.Mtu),
+				Expiry: expiry,
 			},
 		}, nil
 	}
@@ -203,21 +203,70 @@ func convertPath(p *sdpb.Path, dst addr.IA) (path.Path, error) {
 	if err != nil {
 		return path.Path{}, serrors.WrapStr("resolving underlay", err)
 	}
-	interfaces := make([]snet.PathInterface, 0, len(p.Interfaces))
-	for _, pi := range p.Interfaces {
-		interfaces = append(interfaces, snet.PathInterface{
+	interfaces := make([]snet.PathInterface, len(p.Interfaces))
+	for i, pi := range p.Interfaces {
+		interfaces[i] = snet.PathInterface{
 			ID: common.IFIDType(pi.Id),
 			IA: addr.IAInt(pi.IsdAs).IA(),
-		})
+		}
 	}
+	latency := make([]time.Duration, len(p.Latency))
+	for i, v := range p.Latency {
+		latency[i] = time.Second*time.Duration(v.Seconds) + time.Duration(v.Nanos)
+	}
+	geo := make([]snet.GeoCoordinates, len(p.Geo))
+	for i, v := range p.Geo {
+		geo[i] = snet.GeoCoordinates{
+			Latitude:  v.Latitude,
+			Longitude: v.Longitude,
+			Address:   v.Address,
+		}
+	}
+	linkType := make([]snet.LinkType, len(p.LinkType))
+	for i, v := range p.LinkType {
+		linkType[i] = linkTypeFromPB(v)
+	}
+
 	return path.Path{
 		Dst:     interfaces[len(interfaces) - 1].IA,
-		SPath:   spath.Path{Raw: p.Raw, Type: slayers.PathTypeSCION},
+		SPath:   spath.Path{Raw: p.Raw, Type: scion.PathType},
 		NextHop: underlayA,
-		IFaces:  interfaces,
-		Meta: path.PathMetadata{
-			Mtu: uint16(p.Mtu),
-			Exp: expiry,
+		Meta: snet.PathMetadata{
+			Interfaces:   interfaces,
+			MTU:          uint16(p.Mtu),
+			Expiry:       expiry,
+			Latency:      latency,
+			Bandwidth:    p.Bandwidth,
+			Geo:          geo,
+			LinkType:     linkType,
+			InternalHops: p.InternalHops,
+			Notes:        p.Notes,
 		},
 	}, nil
+}
+
+func linkTypeFromPB(lt sdpb.LinkType) snet.LinkType {
+	switch lt {
+	case sdpb.LinkType_LINK_TYPE_DIRECT:
+		return snet.LinkTypeDirect
+	case sdpb.LinkType_LINK_TYPE_MULTI_HOP:
+		return snet.LinkTypeMultihop
+	case sdpb.LinkType_LINK_TYPE_OPEN_NET:
+		return snet.LinkTypeOpennet
+	default:
+		return snet.LinkTypeUnset
+	}
+}
+
+func topoServiceTypeToSVCAddr(st topology.ServiceType) addr.HostSVC {
+	switch st {
+	case topology.Control:
+		return addr.SvcCS
+	case topology.Gateway:
+		return addr.SvcSIG
+	case topology.Time:
+		return addr.SvcTS
+	default:
+		return addr.SvcNone
+	}
 }

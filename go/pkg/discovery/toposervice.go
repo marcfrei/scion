@@ -16,6 +16,8 @@ package discovery
 
 import (
 	"context"
+	"errors"
+	"net"
 
 	"github.com/opentracing/opentracing-go"
 	"google.golang.org/grpc/codes"
@@ -58,14 +60,59 @@ func (t Topology) Gateways(ctx context.Context,
 		Gateways: make([]*dpb.Gateway, 0, len(gateways)),
 	}
 	for _, info := range gateways {
+		// XXX(lukedirtwalker): for now we use a fixed probe port in the future
+		// we can just send a different one if we need to.
+		probeAddr := &net.UDPAddr{
+			IP:   info.CtrlAddr.SCIONAddress.IP,
+			Zone: info.CtrlAddr.SCIONAddress.Zone,
+			Port: 30856,
+		}
 		reply.Gateways = append(reply.Gateways, &dpb.Gateway{
-			ControlAddress: info.CtrlAddr.SCIONAddress.String(),
-			DataAddress:    info.DataAddr.String(),
+			ControlAddress:  info.CtrlAddr.SCIONAddress.String(),
+			DataAddress:     info.DataAddr.String(),
+			ProbeAddress:    probeAddr.String(),
+			AllowInterfaces: info.AllowInterfaces,
 		})
 	}
 	logger.Debug("Replied with gateways", "gateways", gateways)
 	t.updateTelemetry(span, labels.WithResult(prom.Success), nil)
 	return reply, nil
+}
+
+// HiddenSegmentServices discovers hidden segment services in this topology.
+func (t Topology) HiddenSegmentServices(ctx context.Context,
+	_ *dpb.HiddenSegmentServicesRequest) (*dpb.HiddenSegmentServicesResponse, error) {
+
+	span := opentracing.SpanFromContext(ctx)
+	labels := requestLabels{ReqType: "hidden_segment_services"}
+	logger := log.FromCtx(ctx)
+
+	topo := t.Provider.Get()
+	lookups, err := topo.MakeHostInfos(topology.HiddenSegmentLookup)
+	if err != nil && !errors.Is(err, topology.ErrAddressNotFound) {
+		return nil, err
+	}
+	registration, err := topo.MakeHostInfos(topology.HiddenSegmentRegistration)
+	if err != nil && !errors.Is(err, topology.ErrAddressNotFound) {
+		return nil, err
+	}
+
+	response := &dpb.HiddenSegmentServicesResponse{}
+	for _, l := range lookups {
+		response.Lookup = append(response.Lookup, &dpb.HiddenSegmentLookupServer{
+			Address: l.String(),
+		})
+	}
+	for _, r := range registration {
+		response.Registration = append(response.Registration, &dpb.HiddenSegmentRegistrationServer{
+			Address: r.String(),
+		})
+	}
+
+	logger.Debug("Replied with hidden segment services",
+		"lookups", len(lookups), "registration", len(registration))
+	t.updateTelemetry(span, labels.WithResult(prom.Success), nil)
+	return response, nil
 }
 
 // RequestsLabels exposes the labels required by the Requests metric.

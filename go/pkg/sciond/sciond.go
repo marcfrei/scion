@@ -16,6 +16,7 @@ package sciond
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"path/filepath"
@@ -61,6 +62,10 @@ func TrustEngine(cfgDir string, db trust.DB, dialer libgrpc.Dialer) (trust.Engin
 	}
 	log.Info("TRCs loaded", "files", loaded.Loaded)
 	for f, r := range loaded.Ignored {
+		if errors.Is(r, trust.ErrAlreadyExists) {
+			log.Debug("Ignoring existing TRC", "file", f)
+			continue
+		}
 		log.Info("Ignoring non-TRC", "file", f, "reason", r)
 	}
 	loaded, err = trust.LoadChains(context.Background(), certsDir, db)
@@ -70,6 +75,14 @@ func TrustEngine(cfgDir string, db trust.DB, dialer libgrpc.Dialer) (trust.Engin
 	}
 	log.Info("Certificate chains loaded", "files", loaded.Loaded)
 	for f, r := range loaded.Ignored {
+		if errors.Is(r, trust.ErrAlreadyExists) {
+			log.Debug("Ignoring existing certificate chain", "file", f)
+			continue
+		}
+		if errors.Is(r, trust.ErrOutsideValidity) {
+			log.Debug("Ignoring certificate chain outside validity", "file", f)
+			continue
+		}
 		log.Info("Ignoring non-certificate chain", "file", f, "reason", r)
 	}
 	return trust.Engine{
@@ -98,8 +111,8 @@ type ServerConfig struct {
 }
 
 // NewServer constructs a daemon API server.
-func NewServer(cfg ServerConfig) servers.DaemonServer {
-	return servers.DaemonServer{
+func NewServer(cfg ServerConfig) *servers.DaemonServer {
+	return &servers.DaemonServer{
 		Fetcher:      cfg.Fetcher,
 		ASInspector:  cfg.Engine.Inspector,
 		RevCache:     cfg.RevCache,

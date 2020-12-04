@@ -43,16 +43,12 @@ type Path interface {
 	UnderlayNextHop() *net.UDPAddr
 	// Path returns a raw (data-plane compatible) representation of the path.
 	Path() spath.Path
-	// Interfaces returns a list of interfaces on the path. If the list is not
-	// available the result is nil.
-	// XXX(matzf): move this to PathMetadata
-	Interfaces() []PathInterface
 	// Destination is the AS the path points to. Empty paths return the local
 	// AS of the router that created them.
 	Destination() addr.IA
 	// Metadata returns supplementary information about this path.
 	// Returns nil if the metadata is not available.
-	Metadata() PathMetadata
+	Metadata() *PathMetadata
 	// Copy create a copy of the path.
 	Copy() Path
 }
@@ -70,12 +66,92 @@ func (iface PathInterface) String() string {
 }
 
 // PathMetadata contains supplementary information about a path.
-// XXX(matzf): change this to a struct type
-type PathMetadata interface {
-	// MTU returns the MTU of the path.
-	MTU() uint16
-	// Expiry returns the expiration time of the path.
-	Expiry() time.Time
+//
+// The information about MTU, Latency, Bandwidth etc. are based solely on data
+// contained in the AS entries in the path construction beacons. These entries
+// are signed/verified based on the control plane PKI. However, the
+// *correctness* of this meta data has *not* been checked.
+type PathMetadata struct {
+	// Interfaces is a list of interfaces on the path.
+	Interfaces []PathInterface
+
+	// MTU is the maximum transmission unit for the path, in bytes.
+	MTU uint16
+
+	// Expiry is the expiration time of the path.
+	Expiry time.Time
+
+	// Latency lists the latencies between any two consecutive interfaces.
+	// Entry i describes the latency between interface i and i+1.
+	// Consequently, there are N-1 entries for N interfaces.
+	// A 0-value indicates that the AS did not announce a latency for this hop.
+	Latency []time.Duration
+
+	// Bandwidth lists the bandwidth between any two consecutive interfaces, in Kbit/s.
+	// Entry i describes the bandwidth between interfaces i and i+1.
+	// A 0-value indicates that the AS did not announce a bandwidth for this hop.
+	Bandwidth []uint64
+
+	// Geo lists the geographical position of the border routers along the path.
+	// Entry i describes the position of the router for interface i.
+	// A 0-value indicates that the AS did not announce a position for this router.
+	Geo []GeoCoordinates
+
+	// LinkType contains the announced link type of inter-domain links.
+	// Entry i describes the link between interfaces 2*i and 2*i+1.
+	LinkType []LinkType
+
+	// InternalHops lists the number of AS internal hops for the ASes on path.
+	// Entry i describes the hop between interfaces 2*i+1 and 2*i+2 in the same AS.
+	// Consequently, there are no entries for the first and last ASes, as these
+	// are not traversed completely by the path.
+	InternalHops []uint32
+
+	// Notes contains the notes added by ASes on the path, in the order of occurrence.
+	// Entry i is the note of AS i on the path.
+	Notes []string
+}
+
+func (pm *PathMetadata) Copy() *PathMetadata {
+	if pm == nil {
+		return nil
+	}
+	return &PathMetadata{
+		Interfaces:   append(pm.Interfaces[:0:0], pm.Interfaces...),
+		MTU:          pm.MTU,
+		Expiry:       pm.Expiry,
+		Latency:      append(pm.Latency[:0:0], pm.Latency...),
+		Bandwidth:    append(pm.Bandwidth[:0:0], pm.Bandwidth...),
+		Geo:          append(pm.Geo[:0:0], pm.Geo...),
+		LinkType:     append(pm.LinkType[:0:0], pm.LinkType...),
+		InternalHops: append(pm.InternalHops[:0:0], pm.InternalHops...),
+		Notes:        append(pm.Notes[:0:0], pm.Notes...),
+	}
+}
+
+// LinkType describes the underlying network for inter-domain links.
+type LinkType uint8
+
+// LinkType values
+const (
+	// LinkTypeUnset represents an unspecified link type.
+	LinkTypeUnset LinkType = iota
+	// LinkTypeDirect represents a direct physical connection.
+	LinkTypeDirect
+	// LinkTypeMultihop represents a connection with local routing/switching.
+	LinkTypeMultihop
+	// LinkTypeOpennet represents a connection overlayed over publicly routed Internet.
+	LinkTypeOpennet
+)
+
+// GeoCoordinates describes a geographical position (of a border router on the path).
+type GeoCoordinates struct {
+	// Latitude of the geographic coordinate, in the WGS 84 datum.
+	Latitude float32
+	// Longitude of the geographic coordinate, in the WGS 84 datum.
+	Longitude float32
+	// Civic address of the location.
+	Address string
 }
 
 type PathFingerprint string
@@ -84,21 +160,17 @@ func (pf PathFingerprint) String() string {
 	return common.RawBytes(pf).String()
 }
 
-type Fingerprinter interface {
-	Interfaces() []PathInterface
-}
-
 // Fingerprint uniquely identifies the path based on the sequence of
 // ASes and BRs, i.e. by its PathInterfaces.
 // Other metadata, such as MTU or NextHop have no effect on the fingerprint.
 // Returns empty string for paths where the interfaces list is not available.
-func Fingerprint(path Fingerprinter) PathFingerprint {
-	interfaces := path.Interfaces()
-	if len(interfaces) == 0 {
+func Fingerprint(path Path) PathFingerprint {
+	meta := path.Metadata()
+	if meta == nil || len(meta.Interfaces) == 0 {
 		return ""
 	}
 	h := sha256.New()
-	for _, intf := range interfaces {
+	for _, intf := range meta.Interfaces {
 		binary.Write(h, binary.BigEndian, intf.IA.IAInt())
 		binary.Write(h, binary.BigEndian, intf.ID)
 	}
@@ -130,7 +202,7 @@ func (p *partialPath) Destination() addr.IA {
 	return p.destination
 }
 
-func (p *partialPath) Metadata() PathMetadata {
+func (p *partialPath) Metadata() *PathMetadata {
 	return nil
 }
 

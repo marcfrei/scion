@@ -21,7 +21,6 @@ import (
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/ctrl/path_mgmt"
 	"github.com/scionproto/scion/go/lib/ctrl/seg"
-	"github.com/scionproto/scion/go/lib/hiddenpath"
 	"github.com/scionproto/scion/go/lib/infra/modules/segverifier"
 	"github.com/scionproto/scion/go/lib/pathdb/query"
 	"github.com/scionproto/scion/go/lib/serrors"
@@ -33,12 +32,18 @@ var (
 	ErrDB           = serrors.New("database error")
 )
 
+// HPGroupID is the hidden path group ID.
+type HPGroupID struct {
+	Owner  addr.IA
+	Suffix uint16
+}
+
 // Segments is a list of segments and revocations belonging to them.
 // Optionally a hidden path group ID is attached.
 type Segments struct {
 	Segs      []*seg.Meta
 	SRevInfos []*path_mgmt.SignedRevInfo
-	HPGroupID hiddenpath.GroupId
+	HPGroupID HPGroupID
 }
 
 // Handler is a handler that verifies and stores seg replies. The handler
@@ -60,7 +65,7 @@ func (h *Handler) Handle(ctx context.Context, recs Segments, server net.Addr) *P
 
 func (h *Handler) verifyAndStore(ctx context.Context,
 	verifiedCh <-chan segverifier.UnitResult,
-	units int, hpGroupID hiddenpath.GroupId) *ProcessedResult {
+	units int, hpGroupID HPGroupID) *ProcessedResult {
 
 	result := &ProcessedResult{}
 	verifiedUnits := make([]segverifier.UnitResult, 0, units)
@@ -80,7 +85,7 @@ func (h *Handler) verifyAndStore(ctx context.Context,
 }
 
 func (h *Handler) storeResults(ctx context.Context, verifiedUnits []segverifier.UnitResult,
-	hpGroupID hiddenpath.GroupId, stats *Stats) ([]error, error) {
+	hpGroupID HPGroupID, stats *Stats) ([]error, error) {
 
 	var verifyErrs []error
 	segs := make([]*SegWithHP, 0, len(verifiedUnits))
@@ -123,12 +128,10 @@ func (h *Handler) storeResults(ctx context.Context, verifiedUnits []segverifier.
 	return verifyErrs, nil
 }
 
-func convertHPGroupID(id hiddenpath.GroupId) []*query.HPCfgID {
+func convertHPGroupID(id HPGroupID) []*query.HPCfgID {
 	return []*query.HPCfgID{
 		{
-			IA: addr.IA{
-				A: id.OwnerAS,
-			},
+			IA: id.Owner,
 			ID: uint64(id.Suffix),
 		},
 	}

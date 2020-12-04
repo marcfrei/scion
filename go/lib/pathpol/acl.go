@@ -20,7 +20,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/scionproto/scion/go/lib/common"
+	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/snet"
 )
 
@@ -42,18 +42,18 @@ func NewACL(entries ...*ACLEntry) (*ACL, error) {
 }
 
 // Eval returns the set of paths that match the ACL.
-func (a *ACL) Eval(inputSet PathSet) PathSet {
-	resultSet := make(PathSet)
+func (a *ACL) Eval(paths []snet.Path) []snet.Path {
 	if a == nil || len(a.Entries) == 0 {
-		return inputSet
+		return paths
 	}
-	for key, path := range inputSet {
+	result := []snet.Path{}
+	for _, path := range paths {
 		// Check ACL
-		if a.evalPath(path) {
-			resultSet[key] = path
+		if a.evalPath(path.Metadata()) {
+			result = append(result, path)
 		}
 	}
-	return resultSet
+	return result
 }
 
 func (a *ACL) MarshalJSON() ([]byte, error) {
@@ -64,8 +64,8 @@ func (a *ACL) UnmarshalJSON(b []byte) error {
 	return json.Unmarshal(b, &a.Entries)
 }
 
-func (a *ACL) evalPath(path Path) ACLAction {
-	for i, iface := range path.Interfaces() {
+func (a *ACL) evalPath(pm *snet.PathMetadata) ACLAction {
+	for i, iface := range pm.Interfaces {
 		if a.evalInterface(iface, i%2 != 0) == Deny {
 			return Deny
 		}
@@ -101,7 +101,7 @@ func (ae *ACLEntry) LoadFromString(str string) error {
 		ae.Rule, err = HopPredicateFromString(parts[1])
 		return err
 	}
-	return common.NewBasicError("ACLEntry has too many parts", nil, "str", str)
+	return serrors.New("ACLEntry has too many parts", "str", str)
 }
 
 func (ae *ACLEntry) String() string {
@@ -134,7 +134,7 @@ func getAction(symbol string) (ACLAction, error) {
 	} else if symbol == denySymbol {
 		return false, nil
 	} else {
-		return false, common.NewBasicError("Bad action symbol", nil, "action", symbol)
+		return false, serrors.New("Bad action symbol", "action", symbol)
 	}
 }
 

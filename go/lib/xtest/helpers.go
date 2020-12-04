@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -192,6 +193,38 @@ func MustParseHexString(s string) []byte {
 		panic(err)
 	}
 	return decoded
+}
+
+// MustParseCIDR parses s and returns the corresponding net.IPNet object. It
+// fails the test if s is not a valid CIDR string.
+func MustParseCIDR(t *testing.T, s string) *net.IPNet {
+	t.Helper()
+
+	_, network, err := net.ParseCIDR(s)
+	require.NoError(t, err)
+	return network
+}
+
+// MustParseCIDRs parses the CIDR entries and returns a list containing the
+// parsed net.IPNet objects.
+func MustParseCIDRs(t *testing.T, entries ...string) []*net.IPNet {
+	t.Helper()
+
+	result := make([]*net.IPNet, 0, len(entries))
+	for _, e := range entries {
+		result = append(result, MustParseCIDR(t, e))
+	}
+	return result
+}
+
+// MustParseUDPAddr parses s and returns the corresponding net.UDPAddr object.
+// It fails the test if s is not a valid UDP address string.
+func MustParseUDPAddr(t *testing.T, s string) *net.UDPAddr {
+	t.Helper()
+
+	a, err := net.ResolveUDPAddr("udp", s)
+	require.NoError(t, err)
+	return a
 }
 
 // AssertReadReturnsBetween will call t.Fatalf if the first read from the

@@ -57,21 +57,7 @@ func Filter(seq string, paths []snet.Path) ([]snet.Path, error) {
 	if err != nil {
 		return nil, err
 	}
-	pathsToPs := func(paths []snet.Path) pathpol.PathSet {
-		ps := make(pathpol.PathSet, len(paths))
-		for _, p := range paths {
-			ps[snet.Fingerprint(p)] = p
-		}
-		return ps
-	}
-	keep := s.Eval(pathsToPs(paths))
-	ret := make([]snet.Path, 0, len(paths))
-	for _, p := range paths {
-		if _, ok := keep[snet.Fingerprint(p)]; ok {
-			ret = append(ret, p)
-		}
-	}
-	return ret, nil
+	return s.Eval(paths), nil
 }
 
 // ChoosePath selects a path to the remote.
@@ -107,10 +93,10 @@ func ChoosePath(ctx context.Context, conn sciond.Connector, remote addr.IA,
 	}
 
 	fmt.Printf("Available paths to %s:\n", remote)
-	sectionHeader(len(paths[0].Interfaces()))
+	sectionHeader(len(paths[0].Metadata().Interfaces))
 	for i, path := range paths {
-		if i != 0 && len(paths[i-1].Interfaces()) != len(path.Interfaces()) {
-			sectionHeader(len(path.Interfaces()))
+		if i != 0 && len(paths[i-1].Metadata().Interfaces) != len(path.Metadata().Interfaces) {
+			sectionHeader(len(path.Metadata().Interfaces))
 		}
 		fmt.Printf("[%2d] %s\n", i, ColorPath(path, opts...))
 	}

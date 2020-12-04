@@ -17,11 +17,13 @@ package pktcls
 import (
 	"net"
 	"strconv"
+	"strings"
 
 	"github.com/antlr/antlr4/runtime/Go/antlr"
+	"github.com/google/gopacket/layers"
 
-	"github.com/scionproto/scion/go/lib/common"
-	"github.com/scionproto/scion/go/lib/pktcls/traffic_class"
+	"github.com/scionproto/scion/antlr/traffic_class"
+	"github.com/scionproto/scion/go/lib/serrors"
 )
 
 type classListener struct {
@@ -73,7 +75,7 @@ func (l *classListener) EnterMatchDst(ctx *traffic_class.MatchDstContext) {
 	mdst := &IPv4MatchDestination{}
 	_, mdst.Net, err = net.ParseCIDR(ctx.GetStop().GetText())
 	if err != nil {
-		l.err = common.NewBasicError("CIDR parsing failed!", err, "cidr", ctx.GetStop().GetText())
+		l.err = serrors.WrapStr("CIDR parsing failed!", err, "cidr", ctx.GetStop().GetText())
 	}
 	l.pushCond(NewCondIPv4(mdst))
 }
@@ -84,7 +86,7 @@ func (l *classListener) EnterMatchSrc(ctx *traffic_class.MatchSrcContext) {
 	msrc := &IPv4MatchSource{}
 	_, msrc.Net, err = net.ParseCIDR(ctx.GetStop().GetText())
 	if err != nil {
-		l.err = common.NewBasicError("CIDR parsing failed!", err, "cidr", ctx.GetStop().GetText())
+		l.err = serrors.WrapStr("CIDR parsing failed!", err, "cidr", ctx.GetStop().GetText())
 	}
 	l.pushCond(NewCondIPv4(msrc))
 }
@@ -94,7 +96,7 @@ func (l *classListener) EnterMatchDSCP(ctx *traffic_class.MatchDSCPContext) {
 	mdscp := &IPv4MatchDSCP{}
 	dscp, err := strconv.ParseUint(ctx.GetStop().GetText(), 16, 8)
 	if err != nil {
-		l.err = common.NewBasicError("DSCP parsing failed!", err, "dscp", ctx.GetStop().GetText())
+		l.err = serrors.WrapStr("DSCP parsing failed!", err, "dscp", ctx.GetStop().GetText())
 	}
 	mdscp.DSCP = uint8(dscp)
 	l.pushCond(NewCondIPv4(mdscp))
@@ -105,10 +107,84 @@ func (l *classListener) EnterMatchTOS(ctx *traffic_class.MatchTOSContext) {
 	mtos := &IPv4MatchToS{}
 	tos, err := strconv.ParseUint(ctx.GetStop().GetText(), 16, 8)
 	if err != nil {
-		l.err = common.NewBasicError("TOS parsing failed!", err, "tos", ctx.GetStop().GetText())
+		l.err = serrors.WrapStr("TOS parsing failed!", err, "tos", ctx.GetStop().GetText())
 	}
 	mtos.TOS = uint8(tos)
 	l.pushCond(NewCondIPv4(mtos))
+}
+
+func (l *classListener) EnterMatchProtocol(ctx *traffic_class.MatchProtocolContext) {
+	// Push Selector as Predicate on stack and update the number of Conds on the stack
+	prot := &IPv4MatchProtocol{}
+	number, err := protocolNameToNumber(ctx.GetStop().GetText())
+	if err != nil {
+		l.err = serrors.WrapStr("Protocol parsing failed!", err,
+			"protocol", ctx.GetStop().GetText())
+	}
+	prot.Protocol = number
+	l.pushCond(NewCondIPv4(prot))
+}
+
+func (l *classListener) EnterMatchSrcPort(ctx *traffic_class.MatchSrcPortContext) {
+	// Push Selector as Predicate on stack and update the number of Conds on the stack
+	src := &PortMatchSource{}
+	msrc, err := strconv.ParseUint(ctx.GetStop().GetText(), 10, 16)
+	if err != nil {
+		l.err = serrors.WrapStr("SRCPORT parsing failed!", err,
+			"srcport", ctx.GetStop().GetText())
+	}
+	src.MinPort = uint16(msrc)
+	src.MaxPort = uint16(msrc)
+	l.pushCond(NewCondPorts(src))
+}
+
+func (l *classListener) EnterMatchSrcPortRange(ctx *traffic_class.MatchSrcPortRangeContext) {
+	// Push Selector as Predicate on stack and update the number of Conds on the stack
+	src := &PortMatchSource{}
+	min := ctx.GetToken(traffic_class.TrafficClassLexerDIGITS, 0).GetText()
+	max := ctx.GetToken(traffic_class.TrafficClassLexerDIGITS, 1).GetText()
+	msrcMin, err := strconv.ParseUint(min, 10, 16)
+	if err != nil {
+		l.err = serrors.WrapStr("SRCPORT parsing failed!", err, "srcport", min)
+	}
+	msrcMax, err := strconv.ParseUint(max, 10, 16)
+	if err != nil {
+		l.err = serrors.WrapStr("SRCPORT parsing failed!", err, "srcport", max)
+	}
+	src.MinPort = uint16(msrcMin)
+	src.MaxPort = uint16(msrcMax)
+	l.pushCond(NewCondPorts(src))
+}
+
+func (l *classListener) EnterMatchDstPort(ctx *traffic_class.MatchDstPortContext) {
+	// Push Selector as Predicate on stack and update the number of Conds on the stack
+	dst := &PortMatchDestination{}
+	mdst, err := strconv.ParseUint(ctx.GetStop().GetText(), 10, 16)
+	if err != nil {
+		l.err = serrors.WrapStr("DSTPORT parsing failed!", err,
+			"dstport", ctx.GetStop().GetText())
+	}
+	dst.MinPort = uint16(mdst)
+	dst.MaxPort = uint16(mdst)
+	l.pushCond(NewCondPorts(dst))
+}
+
+func (l *classListener) EnterMatchDstPortRange(ctx *traffic_class.MatchDstPortRangeContext) {
+	// Push Selector as Predicate on stack and update the number of Conds on the stack
+	dst := &PortMatchDestination{}
+	min := ctx.GetToken(traffic_class.TrafficClassLexerDIGITS, 0).GetText()
+	max := ctx.GetToken(traffic_class.TrafficClassLexerDIGITS, 1).GetText()
+	mdstMin, err := strconv.ParseUint(min, 10, 16)
+	if err != nil {
+		l.err = serrors.WrapStr("SRCPORT parsing failed!", err, "dstport", min)
+	}
+	mdstMax, err := strconv.ParseUint(max, 10, 16)
+	if err != nil {
+		l.err = serrors.WrapStr("SRCPORT parsing failed!", err, "dstport", max)
+	}
+	dst.MinPort = uint16(mdstMin)
+	dst.MaxPort = uint16(mdstMax)
+	l.pushCond(NewCondPorts(dst))
 }
 
 func (l *classListener) EnterCondCls(ctx *traffic_class.CondClsContext) {
@@ -147,7 +223,7 @@ func (l *classListener) ExitCondNot(ctx *traffic_class.CondNotContext) {
 func (l *classListener) EnterCondBool(ctx *traffic_class.CondBoolContext) {
 	bool, err := strconv.ParseBool(ctx.GetStop().GetText())
 	if err != nil {
-		l.err = common.NewBasicError("CondBool parsing failed!", err,
+		l.err = serrors.WrapStr("CondBool parsing failed!", err,
 			"bool", ctx.GetStop().GetText())
 	}
 	l.pushCond(CondBool(bool))
@@ -163,7 +239,7 @@ func ValidateTrafficClass(class string) error {
 	listener := &classListener{}
 	antlr.ParseTreeWalkerDefault.Walk(listener, p.TrafficClass())
 	if errListener.msg != "" {
-		return common.NewBasicError("Parsing of traffic class failed:", nil,
+		return serrors.New("Parsing of traffic class failed:",
 			"err", errListener.msg)
 	}
 	if listener.err != nil {
@@ -182,7 +258,7 @@ func BuildClassTree(class string) (Cond, error) {
 	listener := &classListener{}
 	antlr.ParseTreeWalkerDefault.Walk(listener, p.TrafficClass())
 	if errListener.msg != "" {
-		return nil, common.NewBasicError("Parsing of traffic class failed:", nil,
+		return nil, serrors.New("Parsing of traffic class failed:",
 			"err", errListener.msg)
 	}
 	if listener.err != nil {
@@ -204,4 +280,15 @@ func buildTrafficClassParser(class string) *traffic_class.TrafficClassParser {
 	)
 	parser.BuildParseTrees = true
 	return parser
+}
+
+// protocolNameToNumber converts protocol name (e.g. "TCP") to IP protcol
+// number. The function is case insensitive.
+func protocolNameToNumber(name string) (uint8, error) {
+	for number, meta := range layers.IPProtocolMetadata {
+		if strings.EqualFold(name, meta.Name) {
+			return uint8(number), nil
+		}
+	}
+	return 0, serrors.New("unknown IP protocol name", "name", name)
 }

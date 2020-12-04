@@ -19,16 +19,19 @@ import (
 	"crypto/rand"
 	"math/big"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/scionproto/scion/go/cs/ifstate"
-	"github.com/scionproto/scion/go/cs/metrics"
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/ctrl/seg"
+	"github.com/scionproto/scion/go/lib/infra"
 	"github.com/scionproto/scion/go/lib/log"
+	"github.com/scionproto/scion/go/lib/metrics"
 	"github.com/scionproto/scion/go/lib/periodic"
+	"github.com/scionproto/scion/go/lib/prom"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/topology"
 )
@@ -49,18 +52,20 @@ type Originator struct {
 	Signer       seg.Signer
 	Intfs        *ifstate.Interfaces
 
-	// tick is mutable.
+	Originated metrics.Counter
+
+	// Tick is mutable.
 	Tick Tick
 }
 
 // Name returns the tasks name.
 func (o *Originator) Name() string {
-	return "bs_beaconing_originator"
+	return "control_beaconing_originator"
 }
 
 // Run originates core and downstream beacons.
 func (o *Originator) Run(ctx context.Context) {
-	o.Tick.now = time.Now()
+	o.Tick.SetNow(time.Now())
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -74,18 +79,14 @@ func (o *Originator) Run(ctx context.Context) {
 		o.originateBeacons(ctx, topology.Child)
 	}()
 	wg.Wait()
-	metrics.Originator.Runtime().Add(time.Since(o.Tick.now).Seconds())
-	o.Tick.updateLast()
+	o.Tick.UpdateLast()
 }
 
 // originateBeacons creates and sends a beacon for each active interface of
 // the specified link type.
 func (o *Originator) originateBeacons(ctx context.Context, linkType topology.LinkType) {
 	logger := log.FromCtx(ctx)
-	active, nonActive := sortedIntfs(o.Intfs, linkType)
-	if len(nonActive) > 0 && o.Tick.passed() {
-		logger.Debug("Ignore non-active interfaces", "ifids", nonActive)
-	}
+	active := sortedIntfs(o.Intfs, linkType)
 	intfs := o.needBeacon(active)
 	if len(intfs) == 0 {
 		return
@@ -97,14 +98,16 @@ func (o *Originator) originateBeacons(ctx context.Context, linkType topology.Lin
 		b := beaconOriginator{
 			Originator: o,
 			ifID:       ifid,
-			timestamp:  o.Tick.now,
+			timestamp:  o.Tick.Now(),
 			summary:    s,
 		}
 		go func() {
 			defer log.HandlePanic()
 			defer wg.Done()
+
 			if err := b.originateBeacon(ctx); err != nil {
-				logger.Info("Unable to originate on interface", "ifid", b.ifID, "err", err)
+				logger.Info("Unable to originate on interface",
+					"egress_interface", b.ifID, "err", err)
 			}
 		}()
 	}
@@ -114,7 +117,7 @@ func (o *Originator) originateBeacons(ctx context.Context, linkType topology.Lin
 
 // needBeacon returns a list of interfaces that need a beacon.
 func (o *Originator) needBeacon(active []common.IFIDType) []common.IFIDType {
-	if o.Tick.passed() {
+	if o.Tick.Passed() {
 		return active
 	}
 	stale := make([]common.IFIDType, 0, len(active))
@@ -123,7 +126,7 @@ func (o *Originator) needBeacon(active []common.IFIDType) []common.IFIDType {
 		if intf == nil {
 			continue
 		}
-		if o.Tick.now.Sub(intf.LastOriginate()) > o.Tick.period {
+		if o.Tick.Overdue(intf.LastOriginate()) {
 			stale = append(stale, ifid)
 		}
 	}
@@ -131,13 +134,14 @@ func (o *Originator) needBeacon(active []common.IFIDType) []common.IFIDType {
 }
 
 func (o *Originator) logSummary(logger log.Logger, s *summary, linkType topology.LinkType) {
-	if o.Tick.passed() {
-		logger.Debug("Originated beacons", "type", linkType.String(), "egIfIds", s.IfIds())
+	if o.Tick.Passed() {
+		logger.Debug("Originated beacons",
+			"type", linkType.String(), "egress_interfaces", s.IfIds())
 		return
 	}
 	if s.count > 0 {
 		logger.Debug("Originated beacons on stale interfaces",
-			"type", linkType.String(), "egIfIds", s.IfIds())
+			"type", linkType.String(), "egress_interfaces", s.IfIds())
 	}
 }
 
@@ -151,32 +155,40 @@ type beaconOriginator struct {
 
 // originateBeacon originates a beacon on the given ifid.
 func (o *beaconOriginator) originateBeacon(ctx context.Context) error {
-	labels := metrics.OriginatorLabels{EgIfID: o.ifID, Result: metrics.Success}
+	labels := originatorLabels{Egress: o.ifID}
 	intf := o.Intfs.Get(o.ifID)
 	if intf == nil {
-		metrics.Originator.Beacons(labels.WithResult(metrics.ErrVerify)).Inc()
-		return serrors.New("Interface does not exist")
+		o.incrementMetrics(labels.WithResult(prom.ErrValidate))
+		return serrors.New("interface does not exist")
 	}
 	topoInfo := intf.TopoInfo()
 	bseg, err := o.createBeacon(ctx)
 	if err != nil {
-		metrics.Originator.Beacons(labels.WithResult(metrics.ErrCreate)).Inc()
-		return common.NewBasicError("Unable to create beacon", err, "ifid", o.ifID)
+		o.incrementMetrics(labels.WithResult("err_create"))
+		return serrors.WrapStr("creating beacon", err, "egress_interface", o.ifID)
 	}
 
+	rpcContext, cancelF := context.WithTimeout(ctx, infra.DefaultRPCTimeout)
+	defer cancelF()
+
+	rpcStart := time.Now()
 	err = o.BeaconSender.Send(
-		ctx,
+		rpcContext,
 		bseg,
 		topoInfo.IA,
 		o.ifID,
 		topoInfo.InternalAddr,
 	)
 	if err != nil {
-		metrics.Originator.Beacons(labels.WithResult(metrics.ErrSend)).Inc()
-		return common.NewBasicError("Unable to send packet", err)
+		if rpcContext.Err() != nil {
+			err = serrors.WrapStr("timed out waiting for RPC to complete", err,
+				"waited_for", time.Since(rpcStart))
+		}
+		o.incrementMetrics(labels.WithResult(prom.ErrNetwork))
+		return serrors.WrapStr("sending beacon", err)
 	}
 	o.onSuccess(intf)
-	metrics.Originator.Beacons(labels).Inc()
+	o.incrementMetrics(labels.WithResult(prom.Success))
 	return nil
 }
 
@@ -197,7 +209,28 @@ func (o *beaconOriginator) createBeacon(ctx context.Context) (*seg.PathSegment, 
 }
 
 func (o *beaconOriginator) onSuccess(intf *ifstate.Interface) {
-	intf.Originate(o.Tick.now)
+	intf.Originate(o.Tick.Now())
 	o.summary.AddIfid(o.ifID)
 	o.summary.Inc()
+}
+
+func (o *beaconOriginator) incrementMetrics(labels originatorLabels) {
+	if o.Originator.Originated == nil {
+		return
+	}
+	o.Originator.Originated.With(labels.Expand()...).Add(1)
+}
+
+type originatorLabels struct {
+	Egress common.IFIDType
+	Result string
+}
+
+func (l originatorLabels) Expand() []string {
+	return []string{"egress_interface", strconv.Itoa(int(l.Egress)), prom.LabelResult, l.Result}
+}
+
+func (l originatorLabels) WithResult(result string) originatorLabels {
+	l.Result = result
+	return l
 }

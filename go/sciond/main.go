@@ -15,13 +15,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"path/filepath"
 	"time"
 
+	promgrpc "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/resolver"
@@ -30,18 +33,25 @@ import (
 	libconfig "github.com/scionproto/scion/go/lib/config"
 	"github.com/scionproto/scion/go/lib/env"
 	"github.com/scionproto/scion/go/lib/fatal"
+	"github.com/scionproto/scion/go/lib/infra"
 	"github.com/scionproto/scion/go/lib/infra/infraenv"
 	"github.com/scionproto/scion/go/lib/infra/modules/itopo"
+	"github.com/scionproto/scion/go/lib/infra/modules/segfetcher"
 	segfetchergrpc "github.com/scionproto/scion/go/lib/infra/modules/segfetcher/grpc"
 	"github.com/scionproto/scion/go/lib/log"
+	"github.com/scionproto/scion/go/lib/metrics"
 	"github.com/scionproto/scion/go/lib/pathdb"
 	"github.com/scionproto/scion/go/lib/periodic"
 	"github.com/scionproto/scion/go/lib/prom"
 	"github.com/scionproto/scion/go/lib/revcache"
+	"github.com/scionproto/scion/go/lib/scrypto/signed"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/topology"
 	"github.com/scionproto/scion/go/pkg/command"
 	libgrpc "github.com/scionproto/scion/go/pkg/grpc"
+	"github.com/scionproto/scion/go/pkg/hiddenpath"
+	hpgrpc "github.com/scionproto/scion/go/pkg/hiddenpath/grpc"
+	cryptopb "github.com/scionproto/scion/go/pkg/proto/crypto"
 	sdpb "github.com/scionproto/scion/go/pkg/proto/daemon"
 	"github.com/scionproto/scion/go/pkg/sciond"
 	"github.com/scionproto/scion/go/pkg/sciond/config"
@@ -57,10 +67,11 @@ func main() {
 	var flags struct {
 		config string
 	}
+	executable := filepath.Base(os.Args[0])
 	cmd := &cobra.Command{
-		Use:           "sciond",
+		Use:           executable,
 		Short:         "SCION Daemon",
-		Example:       "  sciond --config sd.toml",
+		Example:       "  " + executable + " --config sd.toml",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		Args:          cobra.NoArgs,
@@ -143,6 +154,12 @@ func run(file string) error {
 	if err != nil {
 		return serrors.WrapStr("creating trust engine", err)
 	}
+	engine.Inspector = trust.CachingInspector{
+		Inspector:          engine.Inspector,
+		Cache:              cfg.TrustEngine.Cache.New(),
+		CacheHits:          metrics.NewPromCounter(trustmetrics.CacheHitsTotal),
+		MaxCacheExpiration: cfg.TrustEngine.Cache.Expiration,
+	}
 
 	listen := sciond.APIAddress(cfg.SD.Address)
 	listener, err := net.Listen("tcp", listen)
@@ -150,14 +167,42 @@ func run(file string) error {
 		return serrors.WrapStr("listening", err)
 	}
 
+	hpGroups, err := hiddenpath.LoadHiddenPathGroups(cfg.SD.HiddenPathGroups)
+	if err != nil {
+		return serrors.WrapStr("loading hidden path groups", err)
+	}
+	var requester segfetcher.RPC
+	requester = &segfetchergrpc.Requester{
+		Dialer: dialer,
+	}
+	if len(hpGroups) > 0 {
+		requester = &hpgrpc.Requester{
+			RegularLookup: &segfetchergrpc.Requester{Dialer: dialer},
+			HPGroups:      hpGroups,
+			Dialer:        dialer,
+		}
+	}
+
+	createVerifier := func() infra.Verifier {
+		if cfg.SD.DisableSegVerification {
+			return acceptAllVerifier{}
+		}
+		return compat.Verifier{Verifier: trust.Verifier{
+			Engine:             engine,
+			Cache:              cfg.TrustEngine.Cache.New(),
+			CacheHits:          metrics.NewPromCounter(trustmetrics.CacheHitsTotal),
+			MaxCacheExpiration: cfg.TrustEngine.Cache.Expiration,
+		}}
+	}
+
 	server := grpc.NewServer(libgrpc.UnaryServerInterceptor())
 	sdpb.RegisterDaemonServiceServer(server, sciond.NewServer(sciond.ServerConfig{
 		Fetcher: fetcher.NewFetcher(
 			fetcher.FetcherConfig{
-				RPC:          &segfetchergrpc.Requester{Dialer: dialer},
+				RPC:          requester,
 				PathDB:       pathDB,
 				Inspector:    engine,
-				Verifier:     compat.Verifier{Verifier: trust.Verifier{Engine: engine}},
+				Verifier:     createVerifier(),
 				RevCache:     revCache,
 				Cfg:          cfg.SD,
 				TopoProvider: itopo.Provider(),
@@ -169,6 +214,7 @@ func run(file string) error {
 		TopoProvider: itopo.Provider(),
 	}))
 
+	promgrpc.Register(server)
 	go func() {
 		defer log.HandlePanic()
 		if err := server.Serve(listener); err != nil {
@@ -228,4 +274,20 @@ func setup(cfg config.Config) error {
 	}
 	infraenv.InitInfraEnvironment(cfg.General.Topology())
 	return nil
+}
+
+type acceptAllVerifier struct{}
+
+func (acceptAllVerifier) Verify(ctx context.Context, signedMsg *cryptopb.SignedMessage,
+	associatedData ...[]byte) (*signed.Message, error) {
+
+	return nil, nil
+}
+
+func (v acceptAllVerifier) WithServer(net.Addr) infra.Verifier {
+	return v
+}
+
+func (v acceptAllVerifier) WithIA(addr.IA) infra.Verifier {
+	return v
 }

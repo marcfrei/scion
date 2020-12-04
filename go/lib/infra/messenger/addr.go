@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/scionproto/scion/go/lib/addr"
-	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/snet"
@@ -96,7 +95,7 @@ func (r AddressRewriter) RedirectToQUIC(ctx context.Context,
 
 		path, err := fa.GetPath()
 		if err != nil {
-			return nil, false, common.NewBasicError("bad path", err)
+			return nil, false, serrors.WrapStr("bad path", err)
 		}
 
 		// During One-Hop Path operation, use SVC resolution to also bootstrap the path.
@@ -122,7 +121,7 @@ func (r AddressRewriter) RedirectToQUIC(ctx context.Context,
 		return ret, quicRedirect, err
 	}
 
-	return nil, false, common.NewBasicError("address type not supported", nil,
+	return nil, false, serrors.New("address type not supported",
 		"addr", fmt.Sprintf("%v(%T)", address, address))
 }
 
@@ -149,6 +148,9 @@ func (r AddressRewriter) buildFullAddress(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+	if p == nil {
+		return nil, serrors.New("no path found", "isd_as", s.IA)
+	}
 
 	ret.Path = p.Path()
 	ret.NextHop = p.UnderlayNextHop()
@@ -157,10 +159,10 @@ func (r AddressRewriter) buildFullAddress(ctx context.Context,
 	}()
 
 	// SVC addresses in the local AS get resolved via topology lookup
-	if len(p.Interfaces()) == 0 { //when local AS
+	if len(p.Metadata().Interfaces) == 0 { //when local AS
 		ov, err := r.SVCRouter.GetUnderlay(s.SVC)
 		if err != nil {
-			return nil, common.NewBasicError("Unable to resolve underlay", err)
+			return nil, serrors.WrapStr("Unable to resolve underlay", err)
 		}
 		ret.NextHop = ov
 	}

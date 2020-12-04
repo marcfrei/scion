@@ -27,6 +27,7 @@ import (
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/util"
 	"github.com/scionproto/scion/go/pkg/storage"
+	trustengine "github.com/scionproto/scion/go/pkg/trust/config"
 )
 
 var (
@@ -36,14 +37,15 @@ var (
 var _ config.Config = (*Config)(nil)
 
 type Config struct {
-	General  env.General      `toml:"general,omitempty"`
-	Features env.Features     `toml:"features,omitempty"`
-	Logging  log.Config       `toml:"log,omitempty"`
-	Metrics  env.Metrics      `toml:"metrics,omitempty"`
-	Tracing  env.Tracing      `toml:"tracing,omitempty"`
-	TrustDB  storage.DBConfig `toml:"trust_db,omitempty"`
-	PathDB   storage.DBConfig `toml:"path_db,omitempty"`
-	SD       SDConfig         `toml:"sd,omitempty"`
+	General     env.General        `toml:"general,omitempty"`
+	Features    env.Features       `toml:"features,omitempty"`
+	Logging     log.Config         `toml:"log,omitempty"`
+	Metrics     env.Metrics        `toml:"metrics,omitempty"`
+	Tracing     env.Tracing        `toml:"tracing,omitempty"`
+	TrustDB     storage.DBConfig   `toml:"trust_db,omitempty"`
+	PathDB      storage.DBConfig   `toml:"path_db,omitempty"`
+	SD          SDConfig           `toml:"sd,omitempty"`
+	TrustEngine trustengine.Config `toml:"trustengine,omitempty"`
 }
 
 func (cfg *Config) InitDefaults() {
@@ -56,6 +58,7 @@ func (cfg *Config) InitDefaults() {
 		cfg.TrustDB.WithDefault(fmt.Sprintf(storage.DefaultTrustDBPath, "sd")),
 		cfg.PathDB.WithDefault(fmt.Sprintf(storage.DefaultPathDBPath, "sd")),
 		&cfg.SD,
+		&cfg.TrustEngine,
 	)
 }
 
@@ -68,6 +71,7 @@ func (cfg *Config) Validate() error {
 		&cfg.TrustDB,
 		&cfg.PathDB,
 		&cfg.SD,
+		&cfg.TrustEngine,
 	)
 }
 
@@ -93,6 +97,7 @@ func (cfg *Config) Sample(dst io.Writer, path config.Path, _ config.CtxMap) {
 			"path_db",
 		),
 		&cfg.SD,
+		&cfg.TrustEngine,
 	)
 }
 
@@ -102,9 +107,16 @@ type SDConfig struct {
 	// Address is the local address to listen on for SCION messages, and to send out messages to
 	// other nodes.
 	Address string `toml:"address,omitempty"`
+	// DisableSegVerification indicates that segment verification should be
+	// disabled.
+	DisableSegVerification bool `toml:"disable_seg_verification,omitempty"`
 	// QueryInterval specifies after how much time segments
 	// for a destination should be refetched.
 	QueryInterval util.DurWrap `toml:"query_interval,omitempty"`
+	// HiddenPathGroup is a file that contains the hiddenpath groups.
+	// If HiddenPathGroups begins with http:// or https://, it will be fetched
+	// over the network from the specified URL instead.
+	HiddenPathGroups string `toml:"hidden_path_groups,omitempty"`
 }
 
 func (cfg *SDConfig) InitDefaults() {

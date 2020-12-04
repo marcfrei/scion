@@ -18,14 +18,22 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/scionproto/scion/go/lib/addr"
-	"github.com/scionproto/scion/go/lib/ctrl"
 	"github.com/scionproto/scion/go/lib/ctrl/ack"
 	"github.com/scionproto/scion/go/lib/ctrl/path_mgmt"
 	"github.com/scionproto/scion/go/lib/ctrl/seg"
-	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/proto"
+)
+
+const (
+	// DefaultRPCTimeout is the default silent time SCION RPC Clients will wait
+	// for before declaring a timeout. Most RPCs will be subject to an
+	// additional context, and the timeout will be the minimum value allowed by
+	// the context and this timeout. RPC clients are free to use a different
+	// timeout if they have special requirements.
+	DefaultRPCTimeout time.Duration = 10 * time.Second
 )
 
 // Handler is implemented by objects that can handle a request coming
@@ -157,43 +165,6 @@ func (mt MessageType) MetricLabel() string {
 	}
 }
 
-// ResourceHealth indicates the health of a resource. A resource could for example be a database.
-// The resource health can be added to a handler, so that the handler only replies if all it's
-// resources are healthy.
-type ResourceHealth interface {
-	// Name returns the name of this resource.
-	Name() string
-	// IsHealthy returns whether the resource is considered healthy currently.
-	// This method must not be blocking and should have the result cached and return ~immediately.
-	IsHealthy() bool
-}
-
-// NewResourceAwareHandler creates a decorated handler that calls the underlying handler if all
-// resources are healthy, otherwise it replies with an error message.
-func NewResourceAwareHandler(handler Handler, resources ...ResourceHealth) Handler {
-	return HandlerFunc(func(r *Request) *HandlerResult {
-		ctx := r.Context()
-		for _, resource := range resources {
-			if !resource.IsHealthy() {
-				logger := log.FromCtx(ctx)
-				rwriter, ok := ResponseWriterFromContext(ctx)
-				if !ok {
-					logger.Error("No response writer found")
-					return MetricsErrInternal
-				}
-				logger.Info("Resource not healthy, can't handle request",
-					"resource", resource.Name())
-				rwriter.SendAckReply(ctx, &ack.Ack{
-					Err:     proto.Ack_ErrCode_reject,
-					ErrDesc: fmt.Sprintf("Resource %s not healthy", resource.Name()),
-				})
-				return MetricsErrInternal
-			}
-		}
-		return handler.Handle(r)
-	})
-}
-
 type ResponseWriter interface {
 	SendAckReply(ctx context.Context, msg *ack.Ack) error
 	SendHPSegReply(ctx context.Context, msg *path_mgmt.HPSegReply) error
@@ -228,17 +199,4 @@ type Verifier interface {
 	// WithIA returns a verifier that only accepts signatures from the
 	// specified IA.
 	WithIA(ia addr.IA) Verifier
-}
-
-var (
-	// NullSigner is a Signer that creates SignedPld's with no signature.
-	NullSigner ctrl.Signer = nullSigner{}
-)
-
-var _ ctrl.Signer = nullSigner{}
-
-type nullSigner struct{}
-
-func (nullSigner) SignLegacy(context.Context, []byte) (*proto.SignS, error) {
-	return &proto.SignS{}, nil
 }

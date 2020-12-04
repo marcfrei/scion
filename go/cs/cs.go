@@ -18,8 +18,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
+	promgrpc "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -30,7 +32,6 @@ import (
 	beaconinggrpc "github.com/scionproto/scion/go/cs/beaconing/grpc"
 	"github.com/scionproto/scion/go/cs/config"
 	"github.com/scionproto/scion/go/cs/ifstate"
-	csmetrics "github.com/scionproto/scion/go/cs/metrics"
 	"github.com/scionproto/scion/go/cs/onehop"
 	segreggrpc "github.com/scionproto/scion/go/cs/segreg/grpc"
 	"github.com/scionproto/scion/go/cs/segreq"
@@ -69,17 +70,17 @@ import (
 	trustgrpc "github.com/scionproto/scion/go/pkg/trust/grpc"
 	trustmetrics "github.com/scionproto/scion/go/pkg/trust/metrics"
 	"github.com/scionproto/scion/go/pkg/trust/renewal"
-	"github.com/scionproto/scion/go/proto"
 )
 
 func main() {
 	var flags struct {
 		config string
 	}
+	executable := filepath.Base(os.Args[0])
 	cmd := &cobra.Command{
-		Use:           "cs",
+		Use:           executable,
 		Short:         "SCION Control Service instance",
-		Example:       "  cs --config cs.toml",
+		Example:       "  " + executable + " --config cs.toml",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		Args:          cobra.NoArgs,
@@ -112,10 +113,6 @@ func run(file string) error {
 	defer log.Flush()
 	defer env.LogAppStopped(common.CPService, cfg.General.ID)
 	defer log.HandlePanic()
-	// TODO(roosd): This should be refactored when applying the new metrics
-	// approach.
-	csmetrics.InitBSMetrics()
-	csmetrics.InitPSMetrics()
 	metrics := cs.NewMetrics()
 
 	intfs, err := setup(&cfg)
@@ -181,7 +178,16 @@ func run(file string) error {
 	}
 	defer beaconStore.Close()
 
-	inspector := trust.DBInspector{DB: trustDB}
+	trustengineCache := cfg.TrustEngine.Cache.New()
+	cacheHits := libmetrics.NewPromCounter(trustmetrics.CacheHitsTotal)
+	inspector := trust.CachingInspector{
+		Inspector: trust.DBInspector{
+			DB: trustDB,
+		},
+		CacheHits:          cacheHits,
+		MaxCacheExpiration: cfg.TrustEngine.Cache.Expiration,
+		Cache:              trustengineCache,
+	}
 	provider := trust.FetchingProvider{
 		DB: trustDB,
 		Fetcher: trustgrpc.Fetcher{
@@ -194,7 +200,10 @@ func run(file string) error {
 	}
 	verifier := compat.Verifier{
 		Verifier: trust.Verifier{
-			Engine: provider,
+			Engine:             provider,
+			CacheHits:          cacheHits,
+			MaxCacheExpiration: cfg.TrustEngine.Cache.Expiration,
+			Cache:              trustengineCache,
 		},
 	}
 	fetcherCfg := segreq.FetcherConfig{
@@ -234,7 +243,7 @@ func run(file string) error {
 			Inserter:       beaconStore,
 			Interfaces:     intfs,
 			Verifier:       verifier,
-			BeaconsHandled: libmetrics.NewPromCounter(csmetrics.Beaconing.BeaconsReceived),
+			BeaconsHandled: libmetrics.NewPromCounter(metrics.BeaconingReceivedTotal),
 		},
 	})
 
@@ -245,10 +254,9 @@ func run(file string) error {
 			CoreChecker: segreq.CoreChecker{Inspector: inspector},
 			PathDB:      pathDB,
 		},
-		RevCache:        revCache,
-		Requests:        libmetrics.NewPromCounter(csmetrics.Requests.Requests),
-		SegmentsSent:    libmetrics.NewPromCounter(csmetrics.Requests.SegmentsSent),
-		RevocationsSent: libmetrics.NewPromCounter(csmetrics.Requests.RevocationsSent),
+		RevCache:     revCache,
+		Requests:     libmetrics.NewPromCounter(metrics.SegmentLookupRequestsTotal),
+		SegmentsSent: libmetrics.NewPromCounter(metrics.SegmentLookupSegmentsSentTotal),
 	}
 	forwardingLookupServer := &segreqgrpc.LookupServer{
 		Lookuper: segreq.ForwardingLookup{
@@ -262,23 +270,21 @@ func run(file string) error {
 				PathDB:    pathDB,
 			},
 		},
-		RevCache:        revCache,
-		Requests:        libmetrics.NewPromCounter(csmetrics.Requests.Requests),
-		SegmentsSent:    libmetrics.NewPromCounter(csmetrics.Requests.SegmentsSent),
-		RevocationsSent: libmetrics.NewPromCounter(csmetrics.Requests.RevocationsSent),
+		RevCache:     revCache,
+		Requests:     libmetrics.NewPromCounter(metrics.SegmentLookupRequestsTotal),
+		SegmentsSent: libmetrics.NewPromCounter(metrics.SegmentLookupSegmentsSentTotal),
 	}
 
 	// Always register a forwarding lookup for AS internal requests.
 	cppb.RegisterSegmentLookupServiceServer(tcpServer, forwardingLookupServer)
 	if topo.Core() {
 		cppb.RegisterSegmentLookupServiceServer(quicServer, authLookupServer)
-	} else {
-		cppb.RegisterSegmentLookupServiceServer(quicServer, forwardingLookupServer)
 	}
 
 	// Handle segment registration.
 	if topo.Core() {
 		cppb.RegisterSegmentRegistrationServiceServer(quicServer, &segreggrpc.RegistrationServer{
+			LocalIA: topo.IA(),
 			SegHandler: seghandler.Handler{
 				Verifier: &seghandler.DefaultVerifier{
 					Verifier: verifier,
@@ -288,7 +294,7 @@ func run(file string) error {
 					RevCache: revCache,
 				},
 			},
-			Registrations: libmetrics.NewPromCounter(csmetrics.Registrations.Registrations),
+			Registrations: libmetrics.NewPromCounter(metrics.SegmentRegistrationsTotal),
 		})
 
 	}
@@ -364,6 +370,8 @@ func run(file string) error {
 	dsHealth.SetServingStatus("discovery", healthpb.HealthCheckResponse_SERVING)
 	healthpb.RegisterHealthServer(tcpServer, dsHealth)
 
+	promgrpc.Register(quicServer)
+	promgrpc.Register(tcpServer)
 	go func() {
 		defer log.HandlePanic()
 		if err := quicServer.Serve(quicStack.Listener); err != nil {
@@ -423,6 +431,7 @@ func run(file string) error {
 		Signer:          signer,
 		OneHopConn:      ohpConn,
 		Inspector:       inspector,
+		Metrics:         metrics,
 		MACGen:          macGen,
 		TopoProvider:    itopo.Provider(),
 		StaticInfo:      func() *beaconing.StaticInfoCfg { return staticInfo },
@@ -475,7 +484,7 @@ func setup(cfg *config.Config) (*ifstate.Interfaces, error) {
 	intfs := ifstate.NewInterfaces(topo.IFInfoMap(), ifstate.Config{})
 	itopo.Init(&itopo.Config{
 		ID:  cfg.General.ID,
-		Svc: proto.ServiceType_cs,
+		Svc: topology.Control,
 		Callbacks: itopo.Callbacks{
 			OnUpdate: func() {
 				intfs.Update(itopo.Get().IFInfoMap())
