@@ -1,4 +1,4 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_library")
+load("//lint:go.bzl", "go_library")
 load("//:scion.bzl", "scion_go_binary")
 
 go_library(
@@ -8,11 +8,11 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//go/lib/config:go_default_library",
+        "//go/lib/daemon:go_default_library",
         "//go/lib/env:go_default_library",
         "//go/lib/fatal:go_default_library",
         "//go/lib/log:go_default_library",
         "//go/lib/prom:go_default_library",
-        "//go/lib/sciond:go_default_library",
         "//go/lib/serrors:go_default_library",
         "//go/lib/snet/addrutil:go_default_library",
         "//go/lib/sock/reliable:go_default_library",
