@@ -97,8 +97,8 @@ func StoreClockSample(refClock, sysClock time.Time) error {
 	*shmTimeLeap = 0
 	*shmTimePrecision = 0
 	*shmTimeNSamples = 0
-	*shmTimeClockTimeStampNSec = 0
-	*shmTimeReceiveTimeStampNSec = 0
+	*shmTimeClockTimeStampNSec = uint32(refClock.Nanosecond())
+	*shmTimeReceiveTimeStampNSec = uint32(sysClock.Nanosecond())
 
 	*shmTimeCount++
 	*shmTimeValid = 1
