@@ -15,6 +15,7 @@ import (
 	"github.com/scionproto/scion/go/lib/sock/reliable/reconnect"
 
 	"github.com/scionproto/scion/go/experiments/ts/ets"
+	"github.com/scionproto/scion/go/experiments/ts/etd"
 	"github.com/scionproto/scion/go/experiments/ts/tsp"
 )
 
@@ -348,6 +349,8 @@ func main() {
 				goff := clockCorrection
 				log.Printf("Global clock correction: %v -> %v\n", goff, now.Add(goff))
 				log.Printf("Global/local clock diff: %v\n", now.Add(goff).Sub(now.Add(loff)))
+
+				etd.StoreClockSample(now.Add(goff), now)
 
 				flag = flagStartRound
 				scheduleNextRound(syncTimer, &syncTime)
