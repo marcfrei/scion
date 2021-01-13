@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/scionproto/scion/go/lib/addr"
-	"github.com/scionproto/scion/go/lib/sciond"
+	"github.com/scionproto/scion/go/lib/daemon"
 	"github.com/scionproto/scion/go/lib/snet"
 )
 
@@ -20,7 +20,7 @@ type PathInfo struct {
 
 var patherLog = log.New(ioutil.Discard, "[tsp/pather] ", log.LstdFlags)
 
-func StartPather(c sciond.Connector, ctx context.Context) (<-chan PathInfo, error) {
+func StartPather(c daemon.Connector, ctx context.Context) (<-chan PathInfo, error) {
 	localIA, err := c.LocalIA(ctx)
 	if err != nil {
 		return nil, err
@@ -37,7 +37,7 @@ func StartPather(c sciond.Connector, ctx context.Context) (<-chan PathInfo, erro
 				patherLog.Printf("Looking up TSP broadcast paths\n")
 
 				corePaths, err := c.Paths(ctx,
-					addr.IA{I: 0, A: 0}, localIA, sciond.PathReqFlags{Refresh: true})
+					addr.IA{I: 0, A: 0}, localIA, daemon.PathReqFlags{Refresh: true})
 				if err != nil {
 					patherLog.Printf("Failed to lookup core paths: %v\n", err)
 				}

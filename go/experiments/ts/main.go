@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/scionproto/scion/go/lib/addr"
-	"github.com/scionproto/scion/go/lib/sciond"
+	"github.com/scionproto/scion/go/lib/daemon"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/sock/reliable"
 	"github.com/scionproto/scion/go/lib/sock/reliable/reconnect"
@@ -51,19 +51,19 @@ var (
 	clockCorrection time.Duration
 )
 
-func newSciondConnector(addr string, ctx context.Context) sciond.Connector {
-	c, err := sciond.NewService(addr).Connect(ctx)
+func newSciondConnector(addr string, ctx context.Context) daemon.Connector {
+	c, err := daemon.NewService(addr).Connect(ctx)
 	if err != nil {
 		log.Fatal("Failed to create SCION connector:", err)
 	}
 	return c
 }
 
-func newPacketDispatcher(c sciond.Connector) snet.PacketDispatcherService {
+func newPacketDispatcher(c daemon.Connector) snet.PacketDispatcherService {
 	return &snet.DefaultPacketDispatcherService{
 		Dispatcher: reconnect.NewDispatcherService(reliable.NewDispatcher("")),
 		SCMPHandler: snet.DefaultSCMPHandler{
-			RevocationHandler: sciond.RevHandler{Connector: c},
+			RevocationHandler: daemon.RevHandler{Connector: c},
 		},
 	}
 }

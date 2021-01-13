@@ -13,7 +13,7 @@ import (
 	"net"
 
 	"github.com/scionproto/scion/go/lib/addr"
-	"github.com/scionproto/scion/go/lib/sciond"
+	"github.com/scionproto/scion/go/lib/daemon"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/sock/reliable"
 	"github.com/scionproto/scion/go/lib/sock/reliable/reconnect"
@@ -23,14 +23,14 @@ func runServer(sciondAddr string, localAddr snet.UDPAddr, dataCallback func(data
 	var err error
 	ctx := context.Background()
 
-	sdc, err := sciond.NewService(sciondAddr).Connect(ctx)
+	sdc, err := daemon.NewService(sciondAddr).Connect(ctx)
 	if err != nil {
 		log.Fatal("Failed to create SCION connector:", err)
 	}
 	pds := &snet.DefaultPacketDispatcherService{
 		Dispatcher: reconnect.NewDispatcherService(reliable.NewDispatcher("")),
 		SCMPHandler: snet.DefaultSCMPHandler{
-			RevocationHandler: sciond.RevHandler{Connector: sdc},
+			RevocationHandler: daemon.RevHandler{Connector: sdc},
 		},
 	}
 
