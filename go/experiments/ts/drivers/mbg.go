@@ -1,4 +1,4 @@
-package ets
+package drivers
 
 // References:
 // https://kb.meinbergglobal.com/kb/driver_software/meinberg_sdks/meinberg_driver_and_api_concepts
@@ -8,45 +8,44 @@ import (
 	"unsafe"
 
 	"encoding/binary"
-	"golang.org/x/sys/unix"
-	// "io/ioutil"
 	"log"
 	"os"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
 	// See https://man7.org/linux/man-pages/man2/ioctl.2.html#NOTES
 
 	ioctlWrite = 1
-	ioctlRead = 2
+	ioctlRead  = 2
 
-	ioctlDirBits = 2
+	ioctlDirBits  = 2
 	ioctlSizeBits = 14
 	ioctlTypeBits = 8
-	ioctlSNBits = 8
+	ioctlSNBits   = 8
 
-	ioctlDirMask = (1 << ioctlDirBits) - 1
+	ioctlDirMask  = (1 << ioctlDirBits) - 1
 	ioctlSizeMask = (1 << ioctlSizeBits) - 1
 	ioctlTypeMask = (1 << ioctlTypeBits) - 1
-	ioctlSNMask = (1 << ioctlSNBits) - 1
+	ioctlSNMask   = (1 << ioctlSNBits) - 1
 
-	ioctlSNShift = 0
+	ioctlSNShift   = 0
 	ioctlTypeShift = ioctlSNShift + ioctlSNBits
 	ioctlSizeShift = ioctlTypeShift + ioctlTypeBits
-	ioctlDirShift = ioctlSizeShift + ioctlSizeBits
+	ioctlDirShift  = ioctlSizeShift + ioctlSizeBits
 )
 
-// var mbgLog = log.New(ioutil.Discard, "[ets/mbg] ", log.LstdFlags)
 var mbgLog = log.New(os.Stderr, "[ets/mbg] ", log.LstdFlags)
 
 func ioctlRequest(d, s, t, n int) uint {
 	// See https://man7.org/linux/man-pages/man2/ioctl.2.html#NOTES
 
-	return (uint(d & ioctlDirMask) << ioctlDirShift) |
-		(uint(s & ioctlSizeMask) << ioctlSizeShift) |
-		(uint(t & ioctlTypeMask) << ioctlTypeShift) |
-		(uint(n & ioctlSNMask) << ioctlSNShift)
+	return (uint(d&ioctlDirMask) << ioctlDirShift) |
+		(uint(s&ioctlSizeMask) << ioctlSizeShift) |
+		(uint(t&ioctlTypeMask) << ioctlTypeShift) |
+		(uint(n&ioctlSNMask) << ioctlSNShift)
 }
 
 func nanoseconds(frac uint32) int64 {
@@ -74,7 +73,7 @@ func FetchMBGClockOffset(dev string) (time.Duration, error) {
 	featureType := uint32(2 /* PCPS */)
 	featureNumber := uint32(6 /* HAS_HR_TIME */)
 
-	featureData := make([]byte, 4 + 4)
+	featureData := make([]byte, 4+4)
 	binary.LittleEndian.PutUint32(featureData[0:], featureType)
 	binary.LittleEndian.PutUint32(featureData[4:], featureNumber)
 
@@ -97,7 +96,7 @@ func FetchMBGClockOffset(dev string) (time.Duration, error) {
 
 	cycleFrequency := binary.LittleEndian.Uint64(cycleFrequencyData[0:])
 
-	timeData := make([]byte, 8 + 4 + 4 + 4 + 2 + 1 + 8 + 8 + 8 + 8)
+	timeData := make([]byte, 8+4+4+4+2+1+8+8+8+8)
 
 	_, _, errno = unix.Syscall(unix.SYS_IOCTL, uintptr(fd),
 		uintptr(ioctlRequest(ioctlRead, len(timeData), 'M', 0x80)),
@@ -124,7 +123,7 @@ func FetchMBGClockOffset(dev string) (time.Duration, error) {
 	mbgLog.Printf("RefTime: %v, UTC offset: %v, status: %v, signal: %v",
 		refTime, refTimeUTCOffset, refTimeStatus, refTimeSignal)
 	mbgLog.Printf("SysTime: %v, at: %v, latency: %v, frequency: %v",
-		sysTime, sysTimeCyclesBefore, refTimeCycles - sysTimeCyclesAfter, cycleFrequency)
+		sysTime, sysTimeCyclesBefore, refTimeCycles-sysTimeCyclesAfter, cycleFrequency)
 	mbgLog.Printf("Offset: %v\n", refTime.Sub(sysTime))
 
 	return refTime.Sub(sysTime), nil

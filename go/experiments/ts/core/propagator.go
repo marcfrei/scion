@@ -1,4 +1,4 @@
-package tsp
+package core
 
 import (
 	"context"
@@ -11,40 +11,40 @@ import (
 )
 
 const (
-	nPropagators = 16
+	nPropagators       = 16
 	nPropagateRequests = 128
 )
 
 type propagateRequest struct {
-	pkt *snet.Packet
+	pkt     *snet.Packet
 	nextHop *net.UDPAddr
 }
 
 type propagator struct {
-	id int
-	packetConn snet.PacketConn
-	localIA addr.IA
-	localHost addr.HostAddr
-	localPort uint16
+	id                int
+	packetConn        snet.PacketConn
+	localIA           addr.IA
+	localHost         addr.HostAddr
+	localPort         uint16
 	propagateRequests chan propagateRequest
 }
 
 var (
 	propagatorLog = log.New(ioutil.Discard, "[tsp/propagator] ", log.LstdFlags)
 
-	localHost net.UDPAddr
-	propagators chan *propagator
+	localHost         net.UDPAddr
+	propagators       chan *propagator
 	propagateRequests chan propagateRequest
 )
 
 func newPropagator(id int, packetConn snet.PacketConn,
 	localIA addr.IA, localHost addr.HostAddr, localPort uint16) propagator {
 	return propagator{
-		id: id,
-		packetConn: packetConn,
-		localIA: localIA,
-		localHost: localHost,
-		localPort: localPort,
+		id:                id,
+		packetConn:        packetConn,
+		localIA:           localIA,
+		localHost:         localHost,
+		localPort:         localPort,
 		propagateRequests: make(chan propagateRequest),
 	}
 }
@@ -103,5 +103,3 @@ func StartPropagator(s snet.PacketDispatcherService, ctx context.Context,
 func PropagatePacketTo(pkt *snet.Packet, nextHop *net.UDPAddr) {
 	propagateRequests <- propagateRequest{pkt, nextHop}
 }
-
-

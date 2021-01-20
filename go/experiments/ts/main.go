@@ -17,17 +17,16 @@ import (
 	"github.com/scionproto/scion/go/lib/sock/reliable/reconnect"
 	"github.com/scionproto/scion/go/lib/topology"
 
-	"github.com/scionproto/scion/go/experiments/ts/ets"
-	"github.com/scionproto/scion/go/experiments/ts/etd"
-	"github.com/scionproto/scion/go/experiments/ts/tsp"
+	"github.com/scionproto/scion/go/experiments/ts/core"
+	"github.com/scionproto/scion/go/experiments/ts/drivers"
 )
 
 const (
 	flagStartRound = 0
-	flagBroadcast = 1
-	flagUpdate = 2
+	flagBroadcast  = 1
+	flagUpdate     = 2
 
-	roundPeriod = 5 * time.Second
+	roundPeriod   = 5 * time.Second
 	roundDuration = 2 * time.Second
 )
 
@@ -39,8 +38,8 @@ type mbgTimeSource string
 type ntpTimeSource string
 
 type syncEntry struct {
-	ia addr.IA
-	syncInfos []tsp.SyncInfo
+	ia        addr.IA
+	syncInfos []core.SyncInfo
 }
 
 var (
@@ -82,10 +81,10 @@ func median(ds []time.Duration) time.Duration {
 		m = 0
 	} else {
 		i := n / 2
-		if n % 2 != 0 {
+		if n%2 != 0 {
 			m = ds[i]
 		} else {
-			m = (ds[i] + ds[i - 1]) / 2
+			m = (ds[i] + ds[i-1]) / 2
 		}
 	}
 	return m
@@ -95,30 +94,30 @@ func midpoint(ds []time.Duration, f int) time.Duration {
 	sort.Slice(ds, func(i, j int) bool {
 		return ds[i] < ds[j]
 	})
-	return (ds[f] + ds[len(ds) - 1 - f]) / 2
+	return (ds[f] + ds[len(ds)-1-f]) / 2
 }
 
 func (s mbgTimeSource) fetchClockOffset() (time.Duration, error) {
-	return ets.FetchMBGClockOffset(string(s))
+	return drivers.FetchMBGClockOffset(string(s))
 }
 
 func (s ntpTimeSource) fetchClockOffset() (time.Duration, error) {
-	return ets.FetchNTPClockOffset(string(s))
+	return drivers.FetchNTPClockOffset(string(s))
 }
 
 func fetchClockOffset() <-chan time.Duration {
 	clockOffset := make(chan time.Duration, 1)
-	go func () {
+	go func() {
 		var clockOffsets []time.Duration
 		ch := make(chan time.Duration)
 		for _, h := range timeSources {
-				go func(s timeSource) {
-						off, err := s.fetchClockOffset()
-						if err != nil {
-							log.Printf("Failed to fetch clock offset from %v: %v\n", s, err)
-						}
-						ch <- off
-				}(h)
+			go func(s timeSource) {
+				off, err := s.fetchClockOffset()
+				if err != nil {
+					log.Printf("Failed to fetch clock offset from %v: %v\n", s, err)
+				}
+				ch <- off
+			}(h)
 		}
 		for i := 0; i != len(timeSources); i++ {
 			clockOffsets = append(clockOffsets, <-ch)
@@ -130,7 +129,7 @@ func fetchClockOffset() <-chan time.Duration {
 	return clockOffset
 }
 
-func syncEntryClockOffset(syncInfos []tsp.SyncInfo) time.Duration {
+func syncEntryClockOffset(syncInfos []core.SyncInfo) time.Duration {
 	var clockOffsets []time.Duration
 	for _, syncInfo := range syncInfos {
 		clockOffsets = append(clockOffsets, syncInfo.ClockOffset)
@@ -147,7 +146,7 @@ func syncEntryForIA(syncEntries []syncEntry, ia addr.IA) *syncEntry {
 	return nil
 }
 
-func syncInfoForHost(syncInfos []tsp.SyncInfo, host addr.HostAddr) *tsp.SyncInfo {
+func syncInfoForHost(syncInfos []core.SyncInfo, host addr.HostAddr) *core.SyncInfo {
 	for i, x := range syncInfos {
 		if x.Source.Host.Equal(host) {
 			return &syncInfos[i]
@@ -211,13 +210,13 @@ func main() {
 		}
 	}
 
-	pathInfos, err := tsp.StartPather(newSciondConnector(sciondAddr, ctx), ctx, peers)
+	pathInfos, err := core.StartPather(newSciondConnector(sciondAddr, ctx), ctx, peers)
 	if err != nil {
 		log.Fatal("Failed to start TSP pather:", err)
 	}
-	var pathInfo tsp.PathInfo
+	var pathInfo core.PathInfo
 
-	syncInfos, err := tsp.StartHandler(
+	syncInfos, err := core.StartHandler(
 		newPacketDispatcher(newSciondConnector(sciondAddr, ctx)), ctx,
 		localAddr.IA, localAddr.Host)
 	if err != nil {
@@ -225,7 +224,7 @@ func main() {
 	}
 
 	localAddr.Host.Port = 0
-	err = tsp.StartPropagator(
+	err = core.StartPropagator(
 		newPacketDispatcher(newSciondConnector(sciondAddr, ctx)), ctx,
 		localAddr.IA, localAddr.Host)
 	if err != nil {
@@ -257,7 +256,7 @@ func main() {
 				syncEntries = append(syncEntries, syncEntry{
 					ia: syncInfo.Source.IA,
 				})
-				se = &syncEntries[len(syncEntries) - 1]
+				se = &syncEntries[len(syncEntries)-1]
 			}
 			si := syncInfoForHost(se.syncInfos, syncInfo.Source.Host)
 			if si != nil {
@@ -299,11 +298,11 @@ func main() {
 							})
 						}
 						sp := ps[rand.Intn(len(ps))]
-						tsp.PropagatePacketTo(
+						core.PropagatePacketTo(
 							&snet.Packet{
 								PacketInfo: snet.PacketInfo{
 									Destination: snet.SCIONAddress{
-										IA: remoteIA,
+										IA:   remoteIA,
 										Host: addr.SvcTS | addr.SVCMcast,
 									},
 									Path: sp.Path(),
@@ -315,19 +314,19 @@ func main() {
 							sp.UnderlayNextHop())
 					}
 
-					localSyncInfo := tsp.SyncInfo{
+					localSyncInfo := core.SyncInfo{
 						Source: snet.SCIONAddress{
-							IA: localAddr.IA,
+							IA:   localAddr.IA,
 							Host: addr.HostFromIP(localAddr.Host.IP),
 						},
 						ClockOffset: clockOffset.d,
-					};
-					se := syncEntryForIA(syncEntries, localAddr.IA);
+					}
+					se := syncEntryForIA(syncEntries, localAddr.IA)
 					if se == nil {
 						syncEntries = append(syncEntries, syncEntry{
 							ia: localAddr.IA,
 						})
-						se = &syncEntries[len(syncEntries) - 1]
+						se = &syncEntries[len(syncEntries)-1]
 					}
 					si := syncInfoForHost(se.syncInfos, addr.HostFromIP(localAddr.Host.IP))
 					if si != nil {
@@ -366,13 +365,12 @@ func main() {
 					f := (len(clockOffsets) - 1) / 3
 					clockCorrection += midpoint(clockOffsets, f)
 				}
-				// log.Printf("Clock correction: %v -> %v\n", clockCorrection, syncedTime())
 
 				goff := clockCorrection
 				log.Printf("Global clock correction: %v -> %v\n", goff, now.Add(goff))
 				log.Printf("Global/local clock diff: %v\n", now.Add(goff).Sub(now.Add(loff)))
 
-				etd.StoreClockSample(now.Add(goff), now)
+				drivers.StoreSHMClockSample(now.Add(goff), now)
 
 				flag = flagStartRound
 				scheduleNextRound(syncTimer, &syncTime)

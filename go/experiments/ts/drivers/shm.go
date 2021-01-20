@@ -1,4 +1,4 @@
-package etd
+package drivers
 
 // References:
 // http://doc.ntp.org/current-stable/drivers/driver28.html
@@ -19,17 +19,17 @@ var (
 
 	shmInitialized bool
 
-	shmTimeMode *int32
-	shmTimeCount *int32
-	shmTimeClockTimeStampSec *int64
-	shmTimeClockTimeStampUSec *int32
-	shmTimeReceiveTimeStampSec *int64
+	shmTimeMode                 *int32
+	shmTimeCount                *int32
+	shmTimeClockTimeStampSec    *int64
+	shmTimeClockTimeStampUSec   *int32
+	shmTimeReceiveTimeStampSec  *int64
 	shmTimeReceiveTimeStampUSec *int32
-	shmTimeLeap *int32
-	shmTimePrecision *int32
-	shmTimeNSamples *int32
-	shmTimeValid *int32
-	shmTimeClockTimeStampNSec *uint32
+	shmTimeLeap                 *int32
+	shmTimePrecision            *int32
+	shmTimeNSamples             *int32
+	shmTimeValid                *int32
+	shmTimeClockTimeStampNSec   *uint32
 	shmTimeReceiveTimeStampNSec *uint32
 )
 
@@ -81,7 +81,7 @@ func initSHM() error {
 	return nil
 }
 
-func StoreClockSample(refClock, sysClock time.Time) error {
+func StoreSHMClockSample(refClock, sysClock time.Time) error {
 	if !shmInitialized {
 		err := initSHM()
 		if err != nil {

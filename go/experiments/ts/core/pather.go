@@ -1,4 +1,4 @@
-package tsp
+package core
 
 import (
 	"context"
@@ -13,8 +13,8 @@ import (
 )
 
 type PathInfo struct {
-	LocalIA addr.IA
-	PeerASes map[addr.IA][]snet.Path
+	LocalIA      addr.IA
+	PeerASes     map[addr.IA][]snet.Path
 	LocalTSHosts []*net.UDPAddr
 }
 
@@ -79,8 +79,8 @@ func StartPather(c daemon.Connector, ctx context.Context, peersIAs []addr.IA) (<
 				}
 
 				pathInfos <- PathInfo{
-					LocalIA: localIA,
-					PeerASes: peerASes,
+					LocalIA:      localIA,
+					PeerASes:     peerASes,
 					LocalTSHosts: localTSHosts,
 				}
 			}

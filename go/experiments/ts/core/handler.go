@@ -1,4 +1,4 @@
-package tsp
+package core
 
 import (
 	"context"
@@ -13,11 +13,11 @@ import (
 )
 
 type SyncInfo struct {
-	Source snet.SCIONAddress
+	Source      snet.SCIONAddress
 	ClockOffset time.Duration
 }
 
-var handlerLog = log.New(os.Stderr, "[tsp/handler] ", log.LstdFlags) 
+var handlerLog = log.New(os.Stderr, "[tsp/handler] ", log.LstdFlags)
 
 func StartHandler(s snet.PacketDispatcherService, ctx context.Context,
 	localIA addr.IA, localHost *net.UDPAddr) (<-chan SyncInfo, error) {
@@ -53,7 +53,7 @@ func StartHandler(s snet.PacketDispatcherService, ctx context.Context,
 			}
 
 			syncInfos <- SyncInfo{
-				Source: packet.Source,
+				Source:      packet.Source,
 				ClockOffset: clockOffset,
 			}
 		}
