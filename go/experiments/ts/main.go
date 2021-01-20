@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"math/rand"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/sock/reliable"
 	"github.com/scionproto/scion/go/lib/sock/reliable/reconnect"
+	"github.com/scionproto/scion/go/lib/topology"
 
 	"github.com/scionproto/scion/go/experiments/ts/ets"
 	"github.com/scionproto/scion/go/experiments/ts/etd"
@@ -189,7 +192,26 @@ func main() {
 	var err error
 	ctx := context.Background()
 
-	pathInfos, err := tsp.StartPather(newSciondConnector(sciondAddr, ctx), ctx)
+	topo, err := topology.FromJSONFile(filepath.Join(".", "gen",
+		fmt.Sprintf("AS%s/topology.json", localAddr.IA.A.FileFmt())))
+	if err != nil {
+		log.Fatal("Failed to load topology:", err)
+	}
+	tsInfos, err := topo.TimeServices()
+	if err != nil {
+		log.Fatal("Failed to load local time service infos:", err)
+	}
+	var peers []addr.IA
+	for _, tsi := range tsInfos {
+		a := tsi.Addr.SCIONAddress
+		if a.IP.Equal(localAddr.Host.IP) &&
+			a.Port == localAddr.Host.Port &&
+			a.Zone == localAddr.Host.Zone {
+			peers = tsi.Peers
+		}
+	}
+
+	pathInfos, err := tsp.StartPather(newSciondConnector(sciondAddr, ctx), ctx, peers)
 	if err != nil {
 		log.Fatal("Failed to start TSP pather:", err)
 	}
@@ -270,7 +292,7 @@ func main() {
 				} else {
 					clockOffset.d = <-clockOffset.c - clockCorrection
 
-					for remoteIA, ps := range pathInfo.CoreASes {
+					for remoteIA, ps := range pathInfo.PeerASes {
 						if syncEntryForIA(syncEntries, remoteIA) == nil {
 							syncEntries = append(syncEntries, syncEntry{
 								ia: remoteIA,

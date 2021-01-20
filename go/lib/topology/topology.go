@@ -72,7 +72,7 @@ type (
 		HiddenSegmentLookup       IDAddrMap
 		HiddenSegmentRegistration IDAddrMap
 		SIG                       map[string]GatewayInfo
-		TS                        IDAddrMap
+		TS                        map[string]TSInfo
 	}
 
 	// GatewayInfo describes a scion gateway.
@@ -80,6 +80,12 @@ type (
 		CtrlAddr        *TopoAddr
 		DataAddr        *net.UDPAddr
 		AllowInterfaces []uint64
+	}
+
+	// TSInfo describes a scion time service.
+	TSInfo struct {
+		Addr  *TopoAddr
+		Peers	[]addr.IA
 	}
 
 	// BRInfo is a list of AS-wide unique interface IDs for a router. These IDs are also used
@@ -149,7 +155,7 @@ func NewRWTopology() *RWTopology {
 		HiddenSegmentLookup:       make(IDAddrMap),
 		HiddenSegmentRegistration: make(IDAddrMap),
 		SIG:                       make(map[string]GatewayInfo),
-		TS:                        make(IDAddrMap),
+		TS:                        make(map[string]TSInfo),
 		IFInfoMap:                 make(IfInfoMap),
 	}
 }
@@ -323,7 +329,7 @@ func (t *RWTopology) populateServices(raw *jsontopo.Topology) error {
 	if err != nil {
 		return serrors.WrapStr("unable to extract hidden segment registration address", err)
 	}
-	t.TS, err = svcMapFromRaw(raw.TimeServices)
+	t.TS, err = tsMapFromRaw(raw.TimeServices)
 	if err != nil {
 		return serrors.WrapStr("unable to extract TS address", err)
 	}
@@ -382,7 +388,11 @@ func (t *RWTopology) getSvcInfo(svc ServiceType) (*svcInfo, error) {
 		}
 		return &svcInfo{idTopoAddrMap: m}, nil
 	case Time:
-		return &svcInfo{idTopoAddrMap: t.TS}, nil
+		m := make(IDAddrMap)
+		for k, v := range t.TS {
+			m[k] = *v.Addr
+		}
+		return &svcInfo{idTopoAddrMap: m}, nil
 	default:
 		return nil, serrors.New("unsupported service type", "type", svc)
 	}
@@ -408,7 +418,7 @@ func (t *RWTopology) Copy() *RWTopology {
 		SIG:                       copySIGMap(t.SIG),
 		HiddenSegmentLookup:       t.HiddenSegmentLookup.copy(),
 		HiddenSegmentRegistration: t.HiddenSegmentRegistration.copy(),
-		TS:                        t.TS.copy(),
+		TS:                        copyTSMap(t.TS),
 	}
 }
 
@@ -425,6 +435,26 @@ func copySIGMap(m map[string]GatewayInfo) map[string]GatewayInfo {
 		ret[k] = e
 	}
 	return ret
+}
+
+func copyTSMap(m map[string]TSInfo) map[string]TSInfo {
+	if m == nil {
+		return nil
+	}
+	tsMap := make(map[string]TSInfo, len(m))
+	for k, v := range m {
+		a := v.Addr.copy()
+		var ps []addr.IA
+		if v.Peers != nil {
+			ps = make([]addr.IA, len(v.Peers))
+			copy(ps, v.Peers)
+		}
+		tsMap[k] = TSInfo{
+			Addr:  a,
+			Peers: ps,
+		}
+	}
+	return tsMap
 }
 
 func copyBRMap(m map[string]BRInfo) map[string]BRInfo {
@@ -520,6 +550,34 @@ func gatewayMapFromRaw(ras map[string]*jsontopo.GatewayInfo) (map[string]Gateway
 		}
 	}
 	return ret, nil
+}
+
+func tsMapFromRaw(rtsis map[string]*jsontopo.TSInfo) (map[string]TSInfo, error) {
+	tsMap := make(map[string]TSInfo)
+	for name, rtsi := range rtsis {
+		a, err := rawAddrToTopoAddr(rtsi.Addr)
+		if err != nil {
+			return nil, serrors.WrapStr("could not parse address", err,
+				"address", rtsi.Addr, "process_name", name)
+		}
+		var ps []addr.IA
+		if rtsi.Peers != nil {
+			ps = make([]addr.IA, 0, len(rtsi.Peers))
+			for _, rp := range rtsi.Peers {
+				p, err := addr.IAFromString(rp)
+				if err != nil {
+					return nil, serrors.WrapStr("could not parse peer 'ia-as'", err,
+						"peer_ia", rp, "process_name", name)
+				}
+				ps = append(ps, p)
+			}
+		}
+		tsMap[name] = TSInfo{
+			Addr:  a,
+			Peers: ps,
+		}
+	}
+	return tsMap, nil
 }
 
 // GetByID returns the TopoAddr for the given ID, or nil if there is none.

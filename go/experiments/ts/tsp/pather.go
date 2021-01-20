@@ -14,13 +14,13 @@ import (
 
 type PathInfo struct {
 	LocalIA addr.IA
-	CoreASes map[addr.IA][]snet.Path
+	PeerASes map[addr.IA][]snet.Path
 	LocalTSHosts []*net.UDPAddr
 }
 
 var patherLog = log.New(ioutil.Discard, "[tsp/pather] ", log.LstdFlags)
 
-func StartPather(c daemon.Connector, ctx context.Context) (<-chan PathInfo, error) {
+func StartPather(c daemon.Connector, ctx context.Context, peersIAs []addr.IA) (<-chan PathInfo, error) {
 	localIA, err := c.LocalIA(ctx)
 	if err != nil {
 		return nil, err
@@ -36,22 +36,25 @@ func StartPather(c daemon.Connector, ctx context.Context) (<-chan PathInfo, erro
 			case <-ticker.C:
 				patherLog.Printf("Looking up TSP broadcast paths\n")
 
-				corePaths, err := c.Paths(ctx,
-					addr.IA{I: 0, A: 0}, localIA, daemon.PathReqFlags{Refresh: true})
-				if err != nil {
-					patherLog.Printf("Failed to lookup core paths: %v\n", err)
+				peerASes := make(map[addr.IA][]snet.Path)
+				if peersIAs == nil {
+					peersIAs = []addr.IA{{I: 0, A: 0}}
 				}
-				coreASes := make(map[addr.IA][]snet.Path)
-				if corePaths != nil {
-					for _, p := range corePaths {
-						coreASes[p.Destination()] = append(coreASes[p.Destination()], p)
+				for _, peerIA := range peersIAs {
+					peerPaths, err := c.Paths(ctx,
+						peerIA, localIA, daemon.PathReqFlags{Refresh: true})
+					if err != nil {
+						patherLog.Printf("Failed to lookup peer paths: %v\n", err)
+					}
+					for _, p := range peerPaths {
+						peerASes[p.Destination()] = append(peerASes[p.Destination()], p)
 					}
 				}
 
-				patherLog.Printf("Reachable core ASes:\n")
-				for coreAS := range coreASes {
-					patherLog.Printf("%v", coreAS)
-					for _, p := range coreASes[coreAS] {
+				patherLog.Printf("Reachable peer ASes:\n")
+				for peerAS := range peerASes {
+					patherLog.Printf("%v", peerAS)
+					for _, p := range peerASes[peerAS] {
 						patherLog.Printf("\t%v\n", p)
 					}
 				}
@@ -77,7 +80,7 @@ func StartPather(c daemon.Connector, ctx context.Context) (<-chan PathInfo, erro
 
 				pathInfos <- PathInfo{
 					LocalIA: localIA,
-					CoreASes: coreASes,
+					PeerASes: peerASes,
 					LocalTSHosts: localTSHosts,
 				}
 			}

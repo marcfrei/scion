@@ -92,6 +92,9 @@ type Topology interface {
 	// Gateways returns an array of all gateways.
 	Gateways() ([]GatewayInfo, error)
 
+	// TimeServices returns an array of all time services.
+	TimeServices() ([]TSInfo, error)
+
 	// BR returns information for a specific border router
 	//
 	// FIXME(scrye): Simplify return type and make it topology format agnostic.
@@ -238,6 +241,30 @@ func (t *topologyS) Gateways() ([]GatewayInfo, error) {
 	return ret, nil
 }
 
+func (t *topologyS) TimeServices() ([]TSInfo, error) {
+	ks := make([]string, 0, len(t.Topology.TS))
+	for k := range t.Topology.TS {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+
+	tsis := make([]TSInfo, 0, len(ks))
+	for _, k := range ks {
+		v := t.Topology.TS[k]
+		a := v.Addr.copy()
+		var ps []addr.IA
+		if v.Peers != nil {
+			ps = make([]addr.IA, len(v.Peers))
+			copy(ps, v.Peers)
+		}
+		tsis = append(tsis, TSInfo{
+			Addr:  a,
+			Peers: ps,
+		})
+	}
+	return tsis, nil
+}
+
 func (t *topologyS) BR(name string) (BRInfo, bool) {
 	br, ok := t.Topology.BR[name]
 	return br, ok
@@ -271,7 +298,13 @@ func (t *topologyS) topoAddress(svc addr.HostSVC, name string) *TopoAddr {
 			addresses[k] = *v.CtrlAddr
 		}
 	case addr.SvcTS:
-		addresses = t.Topology.TS
+		if len(t.Topology.TS) == 0 {
+			break
+		}
+		addresses = make(IDAddrMap)
+		for k, v := range t.Topology.TS {
+			addresses[k] = *v.Addr
+		}
 	}
 	if addresses == nil {
 		return nil
@@ -433,7 +466,13 @@ func (t *topologyS) SVCNames(svc addr.HostSVC) ServiceNames {
 			m[k] = *v.CtrlAddr
 		}
 	case addr.SvcTS:
-		m = t.Topology.TS
+		if len(t.Topology.TS) == 0 {
+			break
+		}
+		m = make(IDAddrMap)
+		for k, v := range t.Topology.TS {
+			m[k] = *v.Addr
+		}
 	}
 
 	var names ServiceNames

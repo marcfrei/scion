@@ -75,7 +75,7 @@ type Topology struct {
 	HiddenSegmentLookup map[string]*ServerInfo  `json:"hidden_segment_lookup_service,omitempty"`
 	HiddenSegmentReg    map[string]*ServerInfo  `json:"hidden_segment_registration_service,omitempty"`
 	SIG                 map[string]*GatewayInfo `json:"sigs,omitempty"`
-	TimeServices        map[string]*ServerInfo  `json:"time_services,omitempty"`
+	TimeServices        map[string]*TSInfo      `json:"time_services,omitempty"`
 }
 
 // ServerInfo contains the information for a SCION application running in the local AS.
@@ -95,6 +95,12 @@ type GatewayInfo struct {
 	CtrlAddr   string   `json:"ctrl_addr"`
 	DataAddr   string   `json:"data_addr"`
 	Interfaces []uint64 `json:"allow_interfaces,omitempty"`
+}
+
+// TSInfo contains time service specific information.
+type TSInfo struct {
+	Addr  string   `json:"addr"`
+	Peers []string `json:"peers,omitempty"`
 }
 
 // BRInterface contains the information for an data-plane BR socket that is external (i.e., facing
@@ -133,6 +139,18 @@ func (i BRInfo) String() string {
 		i.InternalAddr, i.CtrlAddr))
 	for ifid, intf := range i.Interfaces {
 		s = append(s, fmt.Sprintf("%d: %+v", ifid, intf))
+	}
+	return strings.Join(s, "\n")
+}
+
+func (i TSInfo) String() string {
+	var s []string
+	s = append(s, fmt.Sprintf("Addr: %s", i.Addr))
+	if i.Peers != nil {
+		s = append(s, "Peers:")
+		for p := range i.Peers {
+			s = append(s, fmt.Sprintf("  %s", p))
+		}
 	}
 	return strings.Join(s, "\n")
 }
