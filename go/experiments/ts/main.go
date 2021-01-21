@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/scionproto/scion/go/lib/addr"
+	"github.com/scionproto/scion/go/lib/config"
 	"github.com/scionproto/scion/go/lib/daemon"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/sock/reliable"
@@ -30,6 +31,11 @@ const (
 	roundDuration = 2 * time.Second
 )
 
+type tsConfig struct {
+	MBGTimeSources []string `toml:"mbg_time_sources,omitempty"`
+	NTPTimeSources []string `toml:"ntp_time_sources,omitempty"`
+}
+
 type timeSource interface {
 	fetchClockOffset() (time.Duration, error)
 }
@@ -43,14 +49,7 @@ type syncEntry struct {
 }
 
 var (
-	timeSources = []timeSource{
-		// mbgTimeSource("/dev/mbgclock0"),
-		ntpTimeSource("time.apple.com"),
-		ntpTimeSource("time.facebook.com"),
-		ntpTimeSource("time.google.com"),
-		ntpTimeSource("time.windows.com"),
-	}
-
+	timeSources     []timeSource
 	clockCorrection time.Duration
 )
 
@@ -108,6 +107,7 @@ func (s ntpTimeSource) fetchClockOffset() (time.Duration, error) {
 func fetchClockOffset() <-chan time.Duration {
 	clockOffset := make(chan time.Duration, 1)
 	go func() {
+		const missingOffset = -1 << 63
 		var clockOffsets []time.Duration
 		ch := make(chan time.Duration)
 		for _, h := range timeSources {
@@ -115,12 +115,20 @@ func fetchClockOffset() <-chan time.Duration {
 				off, err := s.fetchClockOffset()
 				if err != nil {
 					log.Printf("Failed to fetch clock offset from %v: %v\n", s, err)
+					ch <- missingOffset
+					return
+				}
+				if off == missingOffset {
+					panic(fmt.Errorf("Unexpected clock offset: %d", off))
 				}
 				ch <- off
 			}(h)
 		}
 		for i := 0; i != len(timeSources); i++ {
-			clockOffsets = append(clockOffsets, <-ch)
+			off := <-ch
+			if off != missingOffset {
+				clockOffsets = append(clockOffsets, off)
+			}
 		}
 		m := median(clockOffsets)
 		log.Printf("Fetched local clock offset: %v\n", m)
@@ -191,8 +199,22 @@ func main() {
 	var err error
 	ctx := context.Background()
 
-	topo, err := topology.FromJSONFile(filepath.Join(".", "gen",
-		fmt.Sprintf("AS%s/topology.json", localAddr.IA.A.FileFmt())))
+	var cfg tsConfig
+	cfgFile := filepath.Join(".", "gen",
+		fmt.Sprintf("AS%s/ts.toml", localAddr.IA.A.FileFmt()))
+	if err := config.LoadFile(cfgFile, &cfg); err != nil {
+		log.Fatal("Failed to load configuration:", err)
+	}
+	for _, s := range cfg.MBGTimeSources {
+		timeSources = append(timeSources, mbgTimeSource(s))
+	}
+	for _, s := range cfg.NTPTimeSources {
+		timeSources = append(timeSources, ntpTimeSource(s))
+	}
+
+	topoFile := filepath.Join(".", "gen",
+		fmt.Sprintf("AS%s/topology.json", localAddr.IA.A.FileFmt()))
+	topo, err := topology.FromJSONFile(topoFile)
 	if err != nil {
 		log.Fatal("Failed to load topology:", err)
 	}
