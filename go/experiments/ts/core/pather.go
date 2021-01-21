@@ -21,6 +21,15 @@ type PathInfo struct {
 var patherLog = log.New(ioutil.Discard, "[tsp/pather] ", log.LstdFlags)
 
 func StartPather(c daemon.Connector, ctx context.Context, peersIAs []addr.IA) (<-chan PathInfo, error) {
+	if peersIAs == nil {
+		peersIAs = []addr.IA{{I: 0, A: 0}}
+	} else {
+		for _, peerIA := range peersIAs {
+			if peerIA.IsWildcard() {
+				panic("Unexpected peer IA: wildcard.")
+			}
+		}
+	}
 	localIA, err := c.LocalIA(ctx)
 	if err != nil {
 		return nil, err
@@ -37,8 +46,10 @@ func StartPather(c daemon.Connector, ctx context.Context, peersIAs []addr.IA) (<
 				patherLog.Printf("Looking up TSP broadcast paths\n")
 
 				peerASes := make(map[addr.IA][]snet.Path)
-				if peersIAs == nil {
-					peersIAs = []addr.IA{{I: 0, A: 0}}
+				for _, peerIA := range peersIAs {
+					if !peerIA.IsWildcard() {
+						peerASes[peerIA] = nil
+					}
 				}
 				for _, peerIA := range peersIAs {
 					peerPaths, err := c.Paths(ctx,

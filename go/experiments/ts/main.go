@@ -319,21 +319,23 @@ func main() {
 								ia: remoteIA,
 							})
 						}
-						sp := ps[rand.Intn(len(ps))]
-						core.PropagatePacketTo(
-							&snet.Packet{
-								PacketInfo: snet.PacketInfo{
-									Destination: snet.SCIONAddress{
-										IA:   remoteIA,
-										Host: addr.SvcTS | addr.SVCMcast,
-									},
-									Path: sp.Path(),
-									Payload: snet.UDPPayload{
-										Payload: []byte(clockOffset.d.String()),
+						if len(ps) != 0 {
+							sp := ps[rand.Intn(len(ps))]
+							core.PropagatePacketTo(
+								&snet.Packet{
+									PacketInfo: snet.PacketInfo{
+										Destination: snet.SCIONAddress{
+											IA:   remoteIA,
+											Host: addr.SvcTS | addr.SVCMcast,
+										},
+										Path: sp.Path(),
+										Payload: snet.UDPPayload{
+											Payload: []byte(clockOffset.d.String()),
+										},
 									},
 								},
-							},
-							sp.UnderlayNextHop())
+								sp.UnderlayNextHop())
+						}
 					}
 
 					localSyncInfo := core.SyncInfo{
