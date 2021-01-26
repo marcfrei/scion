@@ -6,12 +6,14 @@ import (
 	"context"
 	"flag"
 	"log"
+	"net"
 
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/daemon"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/sock/reliable"
 	"github.com/scionproto/scion/go/lib/sock/reliable/reconnect"
+	"github.com/scionproto/scion/go/lib/topology/underlay"
 )
 
 func sendHello(sciondAddr string, localAddr snet.UDPAddr, remoteAddr snet.UDPAddr) {
@@ -69,7 +71,16 @@ func sendHello(sciondAddr string, localAddr snet.UDPAddr, remoteAddr snet.UDPAdd
 		},
 	}
 
-	err = conn.WriteTo(pkt, sp.UnderlayNextHop())
+	nextHop := sp.UnderlayNextHop()
+	if nextHop == nil && remoteAddr.IA.Equal(localAddr.IA) {
+		nextHop = &net.UDPAddr{
+			IP: remoteAddr.Host.IP,
+			Port: underlay.EndhostPort,
+			Zone: remoteAddr.Host.Zone,
+		}
+	}
+
+	err = conn.WriteTo(pkt, nextHop)
 	if err != nil {
 		log.Printf("[%d] Failed to write packet: %v\n", err)
 	}
