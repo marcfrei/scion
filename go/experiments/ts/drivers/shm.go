@@ -81,7 +81,7 @@ func initSHM() error {
 	return nil
 }
 
-func StoreSHMClockSample(refClock, sysClock time.Time) error {
+func StoreSHMClockSample(refTime, sysTime time.Time) error {
 	if !shmInitialized {
 		err := initSHM()
 		if err != nil {
@@ -90,15 +90,15 @@ func StoreSHMClockSample(refClock, sysClock time.Time) error {
 	}
 
 	*shmTimeMode = 0
-	*shmTimeClockTimeStampSec = refClock.Unix()
-	*shmTimeClockTimeStampUSec = int32(refClock.Nanosecond() / 1e3)
-	*shmTimeReceiveTimeStampSec = sysClock.Unix()
-	*shmTimeReceiveTimeStampUSec = int32(sysClock.Nanosecond() / 1e3)
+	*shmTimeClockTimeStampSec = refTime.Unix()
+	*shmTimeClockTimeStampUSec = int32(refTime.Nanosecond() / 1e3)
+	*shmTimeReceiveTimeStampSec = sysTime.Unix()
+	*shmTimeReceiveTimeStampUSec = int32(sysTime.Nanosecond() / 1e3)
 	*shmTimeLeap = 0
 	*shmTimePrecision = 0
 	*shmTimeNSamples = 0
-	*shmTimeClockTimeStampNSec = uint32(refClock.Nanosecond())
-	*shmTimeReceiveTimeStampNSec = uint32(sysClock.Nanosecond())
+	*shmTimeClockTimeStampNSec = uint32(refTime.Nanosecond())
+	*shmTimeReceiveTimeStampNSec = uint32(sysTime.Nanosecond())
 
 	*shmTimeCount++
 	*shmTimeValid = 1

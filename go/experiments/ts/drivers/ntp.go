@@ -10,20 +10,22 @@ import (
 
 var ntpLog = log.New(ioutil.Discard, "[ets/ntp] ", log.LstdFlags)
 
-func FetchNTPClockOffset(host string) (time.Duration, error) {
+func FetchNTPTime(host string) (refTime time.Time, sysTime time.Time, err error) {
 	ntpLog.Printf("[%s] ----------------------", host)
 	ntpLog.Printf("[%s] NTP protocol version %d", host, 4)
 
 	r, err := ntp.QueryWithOptions(host, ntp.QueryOptions{Timeout: 3 * time.Second})
 	if err != nil {
-		return 0, err
+		return time.Time{}, time.Time{}, err
 	}
 	err = r.Validate()
 	if err != nil {
-		return 0, err
+		return time.Time{}, time.Time{}, err
 	}
 
-	ntpLog.Printf("[%s]  LocalTime: %v\n", host, time.Now())
+	now := time.Now()
+
+	ntpLog.Printf("[%s]  LocalTime: %v\n", host, now)
 	ntpLog.Printf("[%s]   XmitTime: %v\n", host, r.Time)
 	ntpLog.Printf("[%s]    RefTime: %v\n", host, r.ReferenceTime)
 	ntpLog.Printf("[%s]        RTT: %v\n", host, r.RTT)
@@ -39,5 +41,5 @@ func FetchNTPClockOffset(host string) (time.Duration, error) {
 	ntpLog.Printf("[%s]       Leap: %v\n", host, r.Leap)
 	ntpLog.Printf("[%s]   KissCode: \"%v\"\n", host, r.KissCode)
 
-	return r.ClockOffset, nil
+	return r.ReferenceTime, now, nil
 }

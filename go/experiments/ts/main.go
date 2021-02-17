@@ -2,10 +2,11 @@ package main
 
 import (
 	"context"
+	crand "crypto/rand"
 	"flag"
 	"fmt"
 	"log"
-	"math/rand"
+	mrand "math/rand"
 	"path/filepath"
 	"sort"
 	"time"
@@ -37,21 +38,27 @@ type tsConfig struct {
 }
 
 type timeSource interface {
-	fetchClockOffset() (time.Duration, error)
+	fetchTime() (refTime time.Time, sysTime time.Time, err error)
 }
 
 type mbgTimeSource string
 type ntpTimeSource string
+
+type timeInfo struct {
+	refTime time.Time
+	sysTime time.Time
+}
+
+func (ti timeInfo) clockOffset() time.Duration {
+	return ti.refTime.Sub(ti.sysTime)
+}
 
 type syncEntry struct {
 	ia        addr.IA
 	syncInfos []core.SyncInfo
 }
 
-var (
-	timeSources     []timeSource
-	clockCorrection time.Duration
-)
+var timeSources []timeSource
 
 func newSciondConnector(addr string, ctx context.Context) daemon.Connector {
 	c, err := daemon.NewService(addr).Connect(ctx)
@@ -70,7 +77,7 @@ func newPacketDispatcher(c daemon.Connector) snet.PacketDispatcherService {
 	}
 }
 
-func median(ds []time.Duration) time.Duration {
+func medianClockOffset(ds []time.Duration) time.Duration {
 	sort.Slice(ds, func(i, j int) bool {
 		return ds[i] < ds[j]
 	})
@@ -89,6 +96,34 @@ func median(ds []time.Duration) time.Duration {
 	return m
 }
 
+func medianTimeInfo(tis []timeInfo) timeInfo {
+	sort.Slice(tis, func(i, j int) bool {
+		return tis[i].clockOffset() < tis[j].clockOffset()
+	})
+	var m timeInfo
+	n := len(tis)
+	if n == 0 {
+		m = timeInfo{}
+	} else {
+		i := n / 2
+		if n%2 != 0 {
+			m = tis[i]
+		} else {
+			b := make([]byte, 1)
+			_, err  := crand.Read(b)
+			if err != nil {
+				log.Printf("Failed to read random number: %v\n", err)
+			}
+			if b[0] > 127 {
+				m = tis[i]
+			} else {
+				m = tis[i-1]
+			}
+		}
+	}
+	return m
+}
+
 func midpoint(ds []time.Duration, f int) time.Duration {
 	sort.Slice(ds, func(i, j int) bool {
 		return ds[i] < ds[j]
@@ -96,45 +131,41 @@ func midpoint(ds []time.Duration, f int) time.Duration {
 	return (ds[f] + ds[len(ds)-1-f]) / 2
 }
 
-func (s mbgTimeSource) fetchClockOffset() (time.Duration, error) {
-	return drivers.FetchMBGClockOffset(string(s))
+func (s mbgTimeSource) fetchTime() (time.Time, time.Time, error) {
+	return drivers.FetchMBGTime(string(s))
 }
 
-func (s ntpTimeSource) fetchClockOffset() (time.Duration, error) {
-	return drivers.FetchNTPClockOffset(string(s))
+func (s ntpTimeSource) fetchTime() (time.Time, time.Time, error) {
+	return drivers.FetchNTPTime(string(s))
 }
 
-func fetchClockOffset() <-chan time.Duration {
-	clockOffset := make(chan time.Duration, 1)
+func fetchTime() <-chan timeInfo {
+	ti := make(chan timeInfo, 1)
 	go func() {
-		const missingOffset = -1 << 63
-		var clockOffsets []time.Duration
-		ch := make(chan time.Duration)
+		var tis []timeInfo
+		ch := make(chan timeInfo)
 		for _, h := range timeSources {
 			go func(s timeSource) {
-				off, err := s.fetchClockOffset()
+				refTime, sysTime, err := s.fetchTime()
 				if err != nil {
 					log.Printf("Failed to fetch clock offset from %v: %v\n", s, err)
-					ch <- missingOffset
+					ch <- timeInfo{}
 					return
 				}
-				if off == missingOffset {
-					panic(fmt.Errorf("Unexpected clock offset: %d", off))
-				}
-				ch <- off
+				ch <- timeInfo{refTime: refTime, sysTime: sysTime}
 			}(h)
 		}
 		for i := 0; i != len(timeSources); i++ {
-			off := <-ch
-			if off != missingOffset {
-				clockOffsets = append(clockOffsets, off)
+			x := <-ch
+			if !x.refTime.IsZero() || !x.sysTime.IsZero() {
+				tis = append(tis, x)
 			}
 		}
-		m := median(clockOffsets)
-		log.Printf("Fetched local clock offset: %v\n", m)
-		clockOffset <- m
+		m := medianTimeInfo(tis)
+		log.Printf("Fetched local time info: refTime: %v, sysTime: %v\n", m.refTime, m.sysTime)
+		ti <- m
 	}()
-	return clockOffset
+	return ti
 }
 
 func syncEntryClockOffset(syncInfos []core.SyncInfo) time.Duration {
@@ -142,7 +173,7 @@ func syncEntryClockOffset(syncInfos []core.SyncInfo) time.Duration {
 	for _, syncInfo := range syncInfos {
 		clockOffsets = append(clockOffsets, syncInfo.ClockOffset)
 	}
-	return median(clockOffsets)
+	return medianClockOffset(clockOffsets)
 }
 
 func syncEntryForIA(syncEntries []syncEntry, ia addr.IA) *syncEntry {
@@ -163,10 +194,6 @@ func syncInfoForHost(syncInfos []core.SyncInfo, host addr.HostAddr) *core.SyncIn
 	return nil
 }
 
-func syncedTime() time.Time {
-	return time.Now().UTC().Add(clockCorrection)
-}
-
 func newTimer() *time.Timer {
 	t := time.NewTimer(0)
 	<-t.C
@@ -174,18 +201,18 @@ func newTimer() *time.Timer {
 }
 
 func scheduleNextRound(t *time.Timer, syncTime *time.Time) {
-	now := syncedTime()
+	now := time.Now().UTC()
 	*syncTime = now.Add(roundPeriod).Truncate(roundPeriod)
 	t.Reset(syncTime.Add(-(roundDuration / 2)).Sub(now))
 }
 
 func scheduleBroadcast(t *time.Timer, syncTime time.Time) {
-	now := syncedTime()
+	now := time.Now().UTC()
 	t.Reset(syncTime.Sub(now))
 }
 
 func scheduleUpdate(t *time.Timer, syncTime time.Time) {
-	now := syncedTime()
+	now := time.Now().UTC()
 	t.Reset(syncTime.Add(roundDuration / 2).Sub(now))
 }
 
@@ -253,15 +280,13 @@ func main() {
 		log.Fatal("Failed to start TSP propagator:", err)
 	}
 
-	var clockOffset struct {
-		d time.Duration
-		c <-chan time.Duration
+	var localTimeInfo struct {
+		i timeInfo
+		c <-chan timeInfo
 	}
 
 	var syncEntries []syncEntry
 	var syncTime time.Time
-
-	clockCorrection = <-fetchClockOffset()
 
 	flag := flagStartRound
 	syncTimer := newTimer()
@@ -294,24 +319,18 @@ func main() {
 				log.Printf("START ROUND\n")
 
 				syncEntries = nil
-				clockOffset.d = 0
-				clockOffset.c = fetchClockOffset()
+				localTimeInfo.i = timeInfo{}
+				localTimeInfo.c = fetchTime()
 
 				flag = flagBroadcast
 				scheduleBroadcast(syncTimer, syncTime)
 			case flagBroadcast:
 				log.Printf("BROADCAST\n")
 
-				if len(clockOffset.c) == 0 {
-					clockOffset.d = <-clockOffset.c - clockCorrection
-
-					clockCorrection += clockOffset.d
-					log.Printf("Clock correction: %v\n", clockCorrection)
-
-					flag = flagStartRound
+				if len(localTimeInfo.c) == 0 {
 					scheduleNextRound(syncTimer, &syncTime)
 				} else {
-					clockOffset.d = <-clockOffset.c - clockCorrection
+					localTimeInfo.i = <-localTimeInfo.c
 
 					for remoteIA, ps := range pathInfo.PeerASes {
 						if syncEntryForIA(syncEntries, remoteIA) == nil {
@@ -320,7 +339,7 @@ func main() {
 							})
 						}
 						if len(ps) != 0 {
-							sp := ps[rand.Intn(len(ps))]
+							sp := ps[mrand.Intn(len(ps))]
 							core.PropagatePacketTo(
 								&snet.Packet{
 									PacketInfo: snet.PacketInfo{
@@ -330,7 +349,7 @@ func main() {
 										},
 										Path: sp.Path(),
 										Payload: snet.UDPPayload{
-											Payload: []byte(clockOffset.d.String()),
+											Payload: []byte(localTimeInfo.i.clockOffset().String()),
 										},
 									},
 								},
@@ -343,7 +362,7 @@ func main() {
 							IA:   localAddr.IA,
 							Host: addr.HostFromIP(localAddr.Host.IP),
 						},
-						ClockOffset: clockOffset.d,
+						ClockOffset: localTimeInfo.i.clockOffset(),
 					}
 					se := syncEntryForIA(syncEntries, localAddr.IA)
 					if se == nil {
@@ -371,7 +390,7 @@ func main() {
 					if len(se.syncInfos) != 0 {
 						d = syncEntryClockOffset(se.syncInfos)
 					} else {
-						d = clockOffset.d
+						d = localTimeInfo.i.clockOffset()
 					}
 					clockOffsets = append(clockOffsets, d)
 					log.Printf("\t%v:\n", se.ia)
@@ -380,21 +399,19 @@ func main() {
 					}
 				}
 
-				loff := clockOffset.d + clockCorrection
-				log.Printf("Local clock correction: %v -> %v\n", loff, now.Add(loff))
+				loff := localTimeInfo.i.clockOffset()
+				lref := localTimeInfo.i.refTime
 
-				if len(clockOffsets) == 0 {
-					clockCorrection += clockOffset.d
-				} else {
+				goff := loff
+				if len(clockOffsets) != 0 {
 					f := (len(clockOffsets) - 1) / 3
-					clockCorrection += midpoint(clockOffsets, f)
+					goff = midpoint(clockOffsets, f)
 				}
+				gref := lref.Add(loff - goff)
 
-				goff := clockCorrection
-				log.Printf("Global clock correction: %v -> %v\n", goff, now.Add(goff))
-				log.Printf("Global/local clock diff: %v\n", now.Add(goff).Sub(now.Add(loff)))
+				log.Printf("refTime: %v, sysTime: %v\n", gref , localTimeInfo.i.sysTime)
 
-				drivers.StoreSHMClockSample(now.Add(goff), now)
+				drivers.StoreSHMClockSample(gref, localTimeInfo.i.sysTime)
 
 				flag = flagStartRound
 				scheduleNextRound(syncTimer, &syncTime)

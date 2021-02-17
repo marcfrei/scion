@@ -57,11 +57,11 @@ func nanoseconds(frac uint32) int64 {
 	return int64((uint64(frac) * uint64(time.Second)) / (1 << 32))
 }
 
-func FetchMBGClockOffset(dev string) (time.Duration, error) {
+func FetchMBGTime(dev string) (refTime time.Time, sysTime time.Time, err error) {
 	fd, err := unix.Open(dev, unix.O_RDWR, 0)
 	if err != nil {
 		mbgLog.Printf("Failed to open %s: %v", dev, err)
-		return 0, err
+		return time.Time{}, time.Time{}, err 
 	}
 	defer func() {
 		err = unix.Close(fd)
@@ -82,7 +82,7 @@ func FetchMBGClockOffset(dev string) (time.Duration, error) {
 		uintptr(unsafe.Pointer(&featureData[0])))
 	if errno != 0 {
 		mbgLog.Printf("Failed to ioctl %s (features) or HR time not supported: %d", dev, errno)
-		return 0, errno
+		return time.Time{}, time.Time{}, errno
 	}
 
 	cycleFrequencyData := make([]byte, 8)
@@ -91,7 +91,7 @@ func FetchMBGClockOffset(dev string) (time.Duration, error) {
 		uintptr(unsafe.Pointer(&cycleFrequencyData[0])))
 	if errno != 0 {
 		mbgLog.Printf("Failed to ioctl %s (cycle frequency): %d", dev, errno)
-		return 0, errno
+		return time.Time{}, time.Time{}, errno
 	}
 
 	cycleFrequency := binary.LittleEndian.Uint64(cycleFrequencyData[0:])
@@ -103,7 +103,7 @@ func FetchMBGClockOffset(dev string) (time.Duration, error) {
 		uintptr(unsafe.Pointer(&timeData[0])))
 	if errno != 0 {
 		mbgLog.Printf("Failed to ioctl %s (time): %d", dev, errno)
-		return 0, errno
+		return time.Time{}, time.Time{}, errno
 	}
 
 	refTimeCycles := int64(binary.LittleEndian.Uint64(timeData[0:]))
@@ -117,8 +117,8 @@ func FetchMBGClockOffset(dev string) (time.Duration, error) {
 	sysTimeSeconds := int64(binary.LittleEndian.Uint64(timeData[39:]))
 	sysTimeNanoseconds := int64(binary.LittleEndian.Uint64(timeData[47:]))
 
-	refTime := time.Unix(refTimeSeconds, nanoseconds(refTimeFractions)).UTC()
-	sysTime := time.Unix(sysTimeSeconds, sysTimeNanoseconds).UTC()
+	refTime = time.Unix(refTimeSeconds, nanoseconds(refTimeFractions)).UTC()
+	sysTime = time.Unix(sysTimeSeconds, sysTimeNanoseconds).UTC()
 
 	mbgLog.Printf("RefTime: %v, UTC offset: %v, status: %v, signal: %v",
 		refTime, refTimeUTCOffset, refTimeStatus, refTimeSignal)
@@ -126,5 +126,5 @@ func FetchMBGClockOffset(dev string) (time.Duration, error) {
 		sysTime, sysTimeCyclesBefore, refTimeCycles-sysTimeCyclesAfter, cycleFrequency)
 	mbgLog.Printf("Offset: %v\n", refTime.Sub(sysTime))
 
-	return refTime.Sub(sysTime), nil
+	return refTime, sysTime, nil
 }
