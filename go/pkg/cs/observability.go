@@ -33,6 +33,7 @@ import (
 	"github.com/scionproto/scion/go/lib/scrypto"
 	"github.com/scionproto/scion/go/lib/scrypto/cppki"
 	"github.com/scionproto/scion/go/lib/serrors"
+	"github.com/scionproto/scion/go/pkg/ca/renewal"
 	cstrust "github.com/scionproto/scion/go/pkg/cs/trust"
 	"github.com/scionproto/scion/go/pkg/discovery"
 	"github.com/scionproto/scion/go/pkg/service"
@@ -60,9 +61,14 @@ type Metrics struct {
 	BeaconingRegisteredTotal               *prometheus.CounterVec
 	BeaconingRegistrarInternalErrorsTotal  *prometheus.CounterVec
 	DiscoveryRequestsTotal                 *prometheus.CounterVec
+	RenewalServerRequestsTotal             *prometheus.CounterVec
+	RenewalCMSHandlerRequestsTotal         *prometheus.CounterVec
+	RenewalLegacyHandlerRequestsTotal      *prometheus.CounterVec
+	RenewalRegisteredHandlers              *prometheus.GaugeVec
 	SegmentLookupRequestsTotal             *prometheus.CounterVec
 	SegmentLookupSegmentsSentTotal         *prometheus.CounterVec
 	SegmentRegistrationsTotal              *prometheus.CounterVec
+	TrustDBQueriesTotal                    *prometheus.CounterVec
 	TrustLatestTRCNotBefore                prometheus.Gauge
 	TrustLatestTRCNotAfter                 prometheus.Gauge
 	TrustLatestTRCSerial                   prometheus.Gauge
@@ -126,6 +132,34 @@ func NewMetrics() *Metrics {
 			},
 			[]string{"dst_isd", "seg_type", prom.LabelResult},
 		),
+		RenewalServerRequestsTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "renewal_received_requests_total",
+				Help: "Total number of renewal requests served.",
+			},
+			[]string{prom.LabelResult},
+		),
+		RenewalCMSHandlerRequestsTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "renewal_cms_handler_requests_total",
+				Help: "Total number of renewal requests served by the in-process CMS handler.",
+			},
+			[]string{prom.LabelResult},
+		),
+		RenewalLegacyHandlerRequestsTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "renewal_legacy_handler_requests_total",
+				Help: "Total number of renewal requests served by the legacy handler.",
+			},
+			[]string{prom.LabelResult},
+		),
+		RenewalRegisteredHandlers: promauto.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "renewal_registered_handlers",
+				Help: "Exposes which handler type (legacy, in-process, delegating) is registered.",
+			},
+			[]string{"type"},
+		),
 		SegmentLookupSegmentsSentTotal: promauto.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "control_segment_lookup_segments_sent_total",
@@ -139,6 +173,13 @@ func NewMetrics() *Metrics {
 				Help: "Total number of path segments received through registrations.",
 			},
 			[]string{"src", "seg_type", prom.LabelResult},
+		),
+		TrustDBQueriesTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "trustengine_db_queries_total",
+				Help: "Total queries to the database",
+			},
+			[]string{"driver", "operation", prom.LabelResult},
 		),
 		TrustLatestTRCNotBefore: promauto.NewGauge(
 			prometheus.GaugeOpts{
@@ -167,7 +208,7 @@ func NewMetrics() *Metrics {
 // StartHTTPEndpoints starts the HTTP endpoints that expose the metrics and
 // additional information.
 func StartHTTPEndpoints(elemId string, cfg interface{}, signer cstrust.RenewingSigner,
-	ca cstrust.ChainBuilder, metrics env.Metrics) error {
+	ca renewal.ChainBuilder, metrics env.Metrics) error {
 	statusPages := service.StatusPages{
 		"info":      service.NewInfoHandler(),
 		"config":    service.NewConfigHandler(cfg),
@@ -175,7 +216,7 @@ func StartHTTPEndpoints(elemId string, cfg interface{}, signer cstrust.RenewingS
 		"signer":    signerHandler(signer),
 		"log/level": log.ConsoleLevel.ServeHTTP,
 	}
-	if ca != (cstrust.ChainBuilder{}) {
+	if ca != (renewal.ChainBuilder{}) {
 		statusPages["ca"] = caHandler(ca)
 	}
 	if err := statusPages.Register(http.DefaultServeMux, elemId); err != nil {
@@ -237,7 +278,7 @@ func signerHandler(signer cstrust.RenewingSigner) http.HandlerFunc {
 	}
 }
 
-func caHandler(signer cstrust.ChainBuilder) http.HandlerFunc {
+func caHandler(signer renewal.ChainBuilder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		s, err := signer.PolicyGen.Generate(r.Context())
@@ -247,7 +288,7 @@ func caHandler(signer cstrust.ChainBuilder) http.HandlerFunc {
 		}
 
 		ia, err := cppki.ExtractIA(s.Certificate.Subject)
-		if err != nil || ia == nil {
+		if err != nil {
 			http.Error(w, "Unable to get extract ISD-AS", http.StatusInternalServerError)
 			return
 		}
@@ -268,7 +309,7 @@ func caHandler(signer cstrust.ChainBuilder) http.HandlerFunc {
 			Policy       Policy   `json:"policy"`
 			CertValidity Validity `json:"cert_validity"`
 		}{
-			Subject:      Subject{IA: *ia},
+			Subject:      Subject{IA: ia},
 			SubjectKeyID: fmt.Sprintf("% X", s.Certificate.SubjectKeyId),
 			Policy: Policy{
 				ChainLifetime: fmt.Sprintf("%s", s.Validity),

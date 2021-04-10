@@ -147,6 +147,9 @@ func testcrypto(topo, cryptoLib, outDir string, noCleanup, isdDir bool) error {
 	if err := flatten(out); err != nil {
 		return err
 	}
+	if err := fixPermissions(cfg); err != nil {
+		return err
+	}
 	if !noCleanup {
 		if err := cleanup(cfg); err != nil {
 			return err
@@ -192,6 +195,7 @@ func createVoters(cfg config) error {
 			`"navigate_pubdir && gen_sensitive && gen_regular"`, cfg.lib))
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		cmd.Env = []string{
+			"TRCID=" + fmt.Sprintf("ISD%d-B1-S1", ia.I),
 			"STARTDATE=" + generalizedTime(cfg.now),
 			"ENDDATE=" + generalizedTime(cfg.now.Add(730*24*time.Hour)),
 			"KEYDIR=" + cryptoVotingDir(ia, outConfig{base: "/workdir", isd: cfg.out.isd}),
@@ -235,6 +239,7 @@ func createCAs(cfg config) error {
 			`navigate_pubdir && gen_root && gen_ca"`, cfg.lib))
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		cmd.Env = []string{
+			"TRCID=" + fmt.Sprintf("ISD%d-B1-S1", ia.I),
 			"STARTDATE=" + generalizedTime(cfg.now),
 			"ENDDATE=" + generalizedTime(cfg.now.Add(730*24*time.Hour)),
 			"KEYDIR=" + cryptoCADir(ia, outConfig{base: "/workdir", isd: cfg.out.isd}),
@@ -273,6 +278,7 @@ func createASes(cfg config) error {
 			`chmod 0666 cp-as.csr"`, cfg.lib))
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		cmd.Env = []string{
+			"TRCID=" + fmt.Sprintf("ISD%d-B1-S1", ia.I),
 			"STARTDATE=" + generalizedTime(cfg.now),
 			"ENDDATE=" + generalizedTime(cfg.now.Add(365*24*time.Hour)),
 			"KEYDIR=" + cryptoASDir(ia, outConfig{base: "/workdir", isd: cfg.out.isd}),
@@ -295,6 +301,7 @@ func createASes(cfg config) error {
 			`chmod 0666 cp-as.crt"`, cfg.lib))
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		cmd.Env = []string{
+			"TRCID=" + fmt.Sprintf("ISD%d-B1-S1", ia.I),
 			"STARTDATE=" + generalizedTime(cfg.now),
 			"ENDDATE=" + generalizedTime(cfg.now.Add(365*24*time.Hour)),
 			"KEYDIR=" + cryptoCADir(ca, outConfig{base: "/workdir", isd: cfg.out.isd}),
@@ -377,11 +384,12 @@ func createTRCs(cfg config) error {
 		partFiles := make([]string, 0, len(voters[isd])*2)
 		for _, voter := range voters[isd] {
 			cmd := exec.Command("sh", "-c", withLib(fmt.Sprintf(`docker_exec "
-				cp /workdir/ISD%d/TRC-B1-S1.pld.der $PUBDIR/ISD-B1-S1.pld.der &&
+				cp /workdir/ISD%[1]d/TRC-B1-S1.pld.der $PUBDIR/ISD%[1]d-B1-S1.pld.der &&
 				navigate_pubdir &&
 				sign_payload"`, isd), cfg.lib))
 			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 			cmd.Env = []string{
+				"TRCID=" + fmt.Sprintf("ISD%d-B1-S1", isd),
 				"KEYDIR=" + cryptoVotingDir(voter, outConfig{base: "/workdir", isd: cfg.out.isd}),
 				"PUBDIR=" + cryptoVotingDir(voter, outConfig{base: "/workdir", isd: cfg.out.isd}),
 				"CONTAINER_NAME=" + cfg.container,
@@ -390,13 +398,15 @@ func createTRCs(cfg config) error {
 				return err
 			}
 			partFiles = append(partFiles,
-				filepath.Join(cryptoVotingDir(voter, cfg.out), "ISD-B1-S1.regular.trc"),
-				filepath.Join(cryptoVotingDir(voter, cfg.out), "ISD-B1-S1.sensitive.trc"),
+				filepath.Join(
+					cryptoVotingDir(voter, cfg.out), fmt.Sprintf("ISD%d-B1-S1.regular.trc", isd)),
+				filepath.Join(
+					cryptoVotingDir(voter, cfg.out), fmt.Sprintf("ISD%d-B1-S1.sensitive.trc", isd)),
 			)
 		}
 
 		err = trcs.RunCombine(partFiles, pldName,
-			filepath.Join(trcDir(isd, cfg.out), fmt.Sprintf("ISD%d-B1-S1.trc", isd)))
+			filepath.Join(trcDir(isd, cfg.out), fmt.Sprintf("ISD%d-B1-S1.trc", isd)), "")
 		if err != nil {
 			return serrors.WrapStr("failed to combine TRCs", err, "isd", isd)
 		}
@@ -555,19 +565,30 @@ func flatten(out outConfig) error {
 	return nil
 }
 
-func cleanup(cfg config) error {
+func fixPermissions(cfg config) error {
 	gid := os.Getegid()
 	uid := os.Geteuid()
 
 	c := withLib(`docker_exec "`+
 		fmt.Sprintf("chown %d:%d /workdir/*/crypto/*/*.key && ", uid, gid)+
-		`chmod 0666 /workdir/*/crypto/*/*.key && `+
+		`chmod 0666 /workdir/*/crypto/*/*.key"`, cfg.lib)
+	if cfg.out.isd {
+		c = strings.ReplaceAll(c, "workdir/", "workdir/*/")
+	}
+	cmd := exec.Command("sh", "-c", c)
+	cmd.Env = []string{"CONTAINER_NAME=" + cfg.container}
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	return cmd.Run()
+}
+
+func cleanup(cfg config) error {
+	c := withLib(`docker_exec "`+
 		`rm -f /workdir/*/crypto/*/cp-*.crt && `+
 		`rm -f /workdir/*/crypto/*/regular-*.crt && `+
 		`rm -f /workdir/*/crypto/*/sensitive-*.crt && `+
 		`rm -f /workdir/*/crypto/*/*.cnf && `+
 		`rm -f /workdir/*/crypto/*/*.csr && `+
-		`rm -f /workdir/*/crypto/voting/ISD-B1-S1.*.trc && `+
+		`rm -f /workdir/*/crypto/voting/ISD*-B1-S1.*.trc && `+
 		`rm -f /workdir/*/crypto/voting/*.der && `+
 		`rm -f /workdir/*/*.der && `+
 		`rm -rf /workdir/*/crypto/*/certificates && `+

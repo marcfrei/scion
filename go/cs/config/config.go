@@ -17,11 +17,10 @@ package config
 
 import (
 	"io"
+	"strings"
 	"time"
 
-	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/config"
-	"github.com/scionproto/scion/go/lib/ctrl/path_mgmt"
 	"github.com/scionproto/scion/go/lib/env"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
@@ -32,12 +31,6 @@ import (
 )
 
 const (
-	// DefaultKeepaliveInterval is the default interval between sending
-	// interface keepalives.
-	DefaultKeepaliveInterval = time.Second
-	// DefaultKeepaliveTimeout is the timeout indicating how long an interface
-	// can receive no keepalive default until it is considered expired.
-	DefaultKeepaliveTimeout = 3 * time.Second
 	// DefaultOriginationInterval is the default interval between originating
 	// beacons in a core BS.
 	DefaultOriginationInterval = 5 * time.Second
@@ -45,25 +38,11 @@ const (
 	DefaultPropagationInterval = 5 * time.Second
 	// DefaultRegistrationInterval is the default interval between registering segments.
 	DefaultRegistrationInterval = 5 * time.Second
-	// DefaultExpiredCheckInterval is the default interval between checking for
-	// expired interfaces.
-	DefaultExpiredCheckInterval = 200 * time.Millisecond
-	// DefaultRevTTL is the default revocation TTL.
-	DefaultRevTTL = path_mgmt.MinRevTTL
-	// DefaultRevOverlap specifies the default for how long before the expiry of an existing
-	// revocation the revoker can reissue a new revocation.
-	DefaultRevOverlap = DefaultRevTTL / 2
 	// DefaultQueryInterval is the default interval after which the segment
 	// cache expires.
 	DefaultQueryInterval = 5 * time.Minute
 	// DefaultMaxASValidity is the default validity period for renewed AS certificates.
 	DefaultMaxASValidity = 3 * 24 * time.Hour
-)
-
-// Error values
-const (
-	ErrKeyConf   common.ErrMsg = "Unable to load KeyConf"
-	ErrCustomers common.ErrMsg = "Unable to load Customers"
 )
 
 var _ config.Config = (*Config)(nil)
@@ -175,25 +154,12 @@ var _ config.Config = (*BSConfig)(nil)
 
 // BSConfig holds the configuration specific to the beacon server.
 type BSConfig struct {
-	// KeepaliveInterval is the interval between sending interface keepalives.
-	KeepaliveInterval util.DurWrap `toml:"keepalive_interval,omitempty"`
-	// KeepaliveTimeout is the timeout indicating how long an interface can
-	// receive no keepalive until it is considered expired.
-	KeepaliveTimeout util.DurWrap `toml:"keepalive_timeout,omitempty"`
 	// OriginationInterval is the interval between originating beacons in a core BS.
 	OriginationInterval util.DurWrap `toml:"origination_interval,omitempty"`
 	// PropagationInterval is the interval between propagating beacons.
 	PropagationInterval util.DurWrap `toml:"propagation_interval,omitempty"`
 	// RegistrationInterval is the interval between registering segments.
 	RegistrationInterval util.DurWrap `toml:"registration_interval,omitempty"`
-	// ExpiredCheckInterval is the interval between checking whether interfaces
-	// have expired and should be revoked.
-	ExpiredCheckInterval util.DurWrap `toml:"expired_check_interval,omitempty"`
-	// RevTTL is the revocation TTL. (default 10s)
-	RevTTL util.DurWrap `toml:"rev_ttl,omitempty"`
-	// RevOverlap specifies for how long before the expiry of an existing revocation the revoker
-	// can reissue a new revocation. (default 5s)
-	RevOverlap util.DurWrap `toml:"rev_overlap,omitempty"`
 	// Policies contains the policy files.
 	Policies Policies `toml:"policies,omitempty"`
 }
@@ -204,12 +170,6 @@ func (cfg *BSConfig) InitDefaults() {
 
 // Validate validates that all durations are set.
 func (cfg *BSConfig) Validate() error {
-	if cfg.KeepaliveInterval.Duration == 0 {
-		initDurWrap(&cfg.KeepaliveInterval, DefaultKeepaliveInterval)
-	}
-	if cfg.KeepaliveTimeout.Duration == 0 {
-		initDurWrap(&cfg.KeepaliveTimeout, DefaultKeepaliveTimeout)
-	}
 	if cfg.OriginationInterval.Duration == 0 {
 		initDurWrap(&cfg.OriginationInterval, DefaultOriginationInterval)
 	}
@@ -218,22 +178,6 @@ func (cfg *BSConfig) Validate() error {
 	}
 	if cfg.RegistrationInterval.Duration == 0 {
 		initDurWrap(&cfg.RegistrationInterval, DefaultRegistrationInterval)
-	}
-	if cfg.ExpiredCheckInterval.Duration == 0 {
-		initDurWrap(&cfg.ExpiredCheckInterval, DefaultExpiredCheckInterval)
-	}
-	if cfg.RevTTL.Duration == 0 {
-		initDurWrap(&cfg.RevTTL, DefaultRevTTL)
-	}
-	if cfg.RevTTL.Duration < path_mgmt.MinRevTTL {
-		return serrors.New("rev_ttl must be equal or greater than MinRevTTL",
-			"MinRevTTL", path_mgmt.MinRevTTL)
-	}
-	if cfg.RevOverlap.Duration == 0 {
-		initDurWrap(&cfg.RevOverlap, DefaultRevOverlap)
-	}
-	if cfg.RevOverlap.Duration > cfg.RevTTL.Duration {
-		return serrors.New("rev_overlap cannot be greater than rev_ttl")
 	}
 	return nil
 }
@@ -326,19 +270,66 @@ type CA struct {
 	config.NoDefaulter
 	// MaxASValidity is the maximum AS certificate lifetime.
 	MaxASValidity util.DurWrap `toml:"max_as_validity,omitempty"`
+	// DisableLegacyRequest disables the handler for certificate issuance
+	// requests received in the protobuf signature format, thus allowing only
+	// requests received in the CMS format.
+	DisableLegacyRequest bool `toml:"disable_legacy_request,omitempty"`
+	// Mode defines whether the Control Service should handle certificate
+	// issuance requests on its own, or whether to delegate handling to a
+	// dedicated Certificate Authority. If it is the empty string, the
+	// in-process mode is selected as the default.
+	Mode CAMode `toml:"mode,omitempty"`
+	// Service contains details about CA functionality delegation.
+	Service CAService `toml:"service,omitempty"`
 }
 
 func (cfg *CA) Validate() error {
 	if cfg.MaxASValidity.Duration == 0 {
 		cfg.MaxASValidity.Duration = DefaultMaxASValidity
 	}
+	if cfg.Mode == "" {
+		cfg.Mode = InProcess
+	}
+	switch strings.ToLower(string(cfg.Mode)) {
+	case string(Delegating):
+		cfg.Mode = Delegating
+	case string(InProcess):
+		cfg.Mode = InProcess
+	default:
+		return serrors.New("unknown CA mode", "mode", cfg.Mode)
+	}
 	return nil
 }
 
-func (cfg *CA) Sample(dst io.Writer, _ config.Path, _ config.CtxMap) {
+func (cfg *CA) Sample(dst io.Writer, path config.Path, ctx config.CtxMap) {
 	config.WriteString(dst, caSample)
+	config.WriteSample(dst, path, ctx, &cfg.Service)
 }
 
 func (cfg *CA) ConfigName() string {
 	return "ca"
+}
+
+type CAMode string
+
+const (
+	Delegating CAMode = "delegating"
+	InProcess  CAMode = "in-process"
+)
+
+// CAService contains details about CA functionality delegation.
+type CAService struct {
+	// SharedSecret is the path to the PEM-encoded shared secret that is used to
+	// create JWT tokens.
+	SharedSecret string `toml:"shared_secret,omitempty"`
+	// Address of the CA Service that handles the delegated certificate renewal requests.
+	Address string `toml:"addr,omitempty"`
+}
+
+func (cfg *CAService) Sample(dst io.Writer, _ config.Path, _ config.CtxMap) {
+	config.WriteString(dst, serviceSample)
+}
+
+func (cfg *CAService) ConfigName() string {
+	return "service"
 }
