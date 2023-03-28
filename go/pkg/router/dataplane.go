@@ -489,8 +489,6 @@ func (d *DataPlane) Run(ctx context.Context) error {
 		for _, msg := range msgs {
 			msg.Buffers[0] = make([]byte, bufSize)
 		}
-		writeMsgs := make(underlayconn.Messages, 1)
-		writeMsgs[0].Buffers = make([][]byte, 1)
 
 		processor := newPacketProcessor(d, ingressID)
 		var scmpErr scmpError
@@ -530,9 +528,7 @@ func (d *DataPlane) Run(ctx context.Context) error {
 				if result.OutConn == nil { // e.g. BFD case no message is forwarded
 					continue
 				}
-				if !d.enqueue(&result) {
-					continue
-				}
+				d.enqueue(&result)
 			}
 		}
 	}
