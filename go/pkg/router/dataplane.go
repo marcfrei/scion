@@ -536,19 +536,19 @@ func (d *DataPlane) Run(ctx context.Context) error {
 	write := func(egressID uint16, rd BatchConn) {
 		defer log.HandlePanic()
 
-		myQueues, ok := d.queueMap[rd]
+		queues, ok := d.queueMap[rd]
 		if !ok {
 			panic("Error getting queues for scheduling")
 		}
 		if d.TC {
-			myQueues.SetScheduler(tc.SchedStrictPriority)
+			queues.SetScheduler(tc.SchedStrictPriority)
 		} else {
-			myQueues.SetScheduler(tc.SchedOthersOnly)
+			queues.SetScheduler(tc.SchedOthersOnly)
 		}
 
 		for d.running {
-			myQueues.WaitUntilNonempty()
-			ms, err := myQueues.Schedule()
+			queues.WaitUntilNonempty()
+			ms, err := queues.Schedule()
 			if err != nil {
 				log.Debug("Error scheduling packet", "err", err)
 			}
@@ -567,7 +567,7 @@ func (d *DataPlane) Run(ctx context.Context) error {
 					outputCounters.OutputPacketsTotal.Inc()
 					outputCounters.OutputBytesTotal.Add(float64(len(m.Buffers[0])))
 				}
-				myQueues.ReturnBuffers(ms)
+				queues.ReturnBuffers(ms)
 			}
 		}
 	}
