@@ -511,6 +511,21 @@ func (d *DataPlane) Run(ctx context.Context) error {
 				srcAddr := p.Addr.(*net.UDPAddr)
 				result, err := processor.processPkt(p.Buffers[0][:p.N], srcAddr)
 
+				// If QoS flag is set, prioritize the packet
+				if processor.scionLayer.TrafficClass != 0 {
+					ok := true
+
+					// TODO: Also authenticate source (time sync server) / authorize path using EPIC?
+					// _, ok = processor.scionLayer.Path.(*epic.Path)
+					// if processor.scionLayer.RawSrcAddr == ... {
+					// 	// Also check SrcAddrType and SrcAddrLen
+					// }
+
+					if ok {
+						result.Class = tc.ClsSNC
+					}	
+				}
+
 				switch {
 				case err == nil:
 				case errors.As(err, &scmpErr):

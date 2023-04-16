@@ -36,6 +36,7 @@ const (
 	ClsColibri
 	ClsEpic
 	ClsOhpEmpty
+	ClsSNC
 )
 
 // Identify the possible scheduling algorithms.
@@ -76,6 +77,7 @@ func NewQueues(scheduling bool, maxPacketLength int) *Queues {
 		qs.mapping[ClsColibri] = newZeroAllocQueue(32, maxPacketLength)
 		qs.mapping[ClsEpic] = newZeroAllocQueue(32, maxPacketLength)
 		qs.mapping[ClsOhpEmpty] = newZeroAllocQueue(32, maxPacketLength)
+		qs.mapping[ClsSNC] = newZeroAllocQueue(32, maxPacketLength)
 	}
 
 	qs.writeBuffer = conn.NewReadMessages(outputBatchCnt)
@@ -250,6 +252,8 @@ func (tc TrafficClass) String() string {
 		return "EPIC"
 	case ClsOhpEmpty:
 		return "OHP/Empty"
+	case ClsSNC:
+		return "SNC (Time Sync)"
 	default:
 		return "Unknown traffic class"
 	}

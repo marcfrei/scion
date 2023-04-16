@@ -25,7 +25,14 @@ type StrictPriorityScheduler struct{}
 // The priorities are: OHP/Empty > COLIBRI > EPIC > Others.
 func (s *StrictPriorityScheduler) Schedule(qs *Queues) ([]ipv4.Message, error) {
 	read := 0
-	n, err := qs.dequeue(ClsOhpEmpty, outputBatchCnt-read, qs.writeBuffer[read:])
+
+	n, err := qs.dequeue(ClsSNC, outputBatchCnt-read, qs.writeBuffer[read:])
+	if err != nil {
+		return nil, err
+	}
+	read = read + n
+
+	n, err = qs.dequeue(ClsOhpEmpty, outputBatchCnt-read, qs.writeBuffer[read:])
 	if err != nil {
 		return nil, err
 	}
