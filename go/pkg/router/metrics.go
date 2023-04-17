@@ -26,6 +26,7 @@ type Metrics struct {
 	InputPacketsTotal         *prometheus.CounterVec
 	OutputPacketsTotal        *prometheus.CounterVec
 	DroppedPacketsTotal       *prometheus.CounterVec
+	SNCPacketsScheduled       *prometheus.CounterVec
 	InterfaceUp               *prometheus.GaugeVec
 	BFDInterfaceStateChanges  *prometheus.CounterVec
 	BFDPacketsSent            *prometheus.CounterVec
@@ -75,6 +76,13 @@ func NewMetrics() *Metrics {
 				Name: "router_dropped_pkts_total",
 				Help: "Total number of packets dropped by the router. This metric reports " +
 					"the number of packets that were dropped because of errors.",
+			},
+			[]string{"interface", "isd_as", "neighbor_isd_as"},
+		),
+		SNCPacketsScheduled: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "router_snc_scheduled_pkts_total",
+				Help: "Total number of SNC packets scheduled.",
 			},
 			[]string{"interface", "isd_as", "neighbor_isd_as"},
 		),

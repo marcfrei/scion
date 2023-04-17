@@ -21,6 +21,8 @@ import (
 
 	"golang.org/x/net/ipv4"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/underlay/conn"
 )
@@ -85,14 +87,18 @@ func NewQueues(scheduling bool, maxPacketLength int) *Queues {
 }
 
 // SetScheduler assigns the provided scheduler to the queues.
-func (qs *Queues) SetScheduler(s SchedulerId) {
+func (qs *Queues) SetScheduler(s SchedulerId, sncPacketsScheduled prometheus.Counter) {
 	switch s {
 	case SchedOthersOnly:
 		qs.scheduler = &OthersOnlyScheduler{}
 	case SchedStrictPriority:
-		qs.scheduler = &StrictPriorityScheduler{}
+		qs.scheduler = &StrictPriorityScheduler{
+			SNCPacketsScheduled: sncPacketsScheduled,
+		}
 	default:
-		qs.scheduler = &StrictPriorityScheduler{}
+		qs.scheduler = &StrictPriorityScheduler{
+			SNCPacketsScheduled: sncPacketsScheduled,
+		}
 	}
 }
 

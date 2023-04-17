@@ -556,9 +556,15 @@ func (d *DataPlane) Run(ctx context.Context) error {
 			panic("Error getting queues for scheduling")
 		}
 		if d.TC {
-			queues.SetScheduler(tc.SchedStrictPriority)
+			queues.SetScheduler(
+				tc.SchedStrictPriority,
+				d.forwardingMetrics[egressID].SNCPacketsScheduled,
+			)
 		} else {
-			queues.SetScheduler(tc.SchedOthersOnly)
+			queues.SetScheduler(
+				tc.SchedOthersOnly,
+				nil /* sncPacketsScheduled */,
+			)
 		}
 
 		for d.running {
@@ -1700,6 +1706,7 @@ type forwardingMetrics struct {
 	InputPacketsTotal   prometheus.Counter
 	OutputPacketsTotal  prometheus.Counter
 	DroppedPacketsTotal prometheus.Counter
+	SNCPacketsScheduled prometheus.Counter
 }
 
 func initForwardingMetrics(metrics *Metrics, labels prometheus.Labels) forwardingMetrics {
@@ -1709,12 +1716,14 @@ func initForwardingMetrics(metrics *Metrics, labels prometheus.Labels) forwardin
 		OutputBytesTotal:    metrics.OutputBytesTotal.With(labels),
 		OutputPacketsTotal:  metrics.OutputPacketsTotal.With(labels),
 		DroppedPacketsTotal: metrics.DroppedPacketsTotal.With(labels),
+		SNCPacketsScheduled: metrics.SNCPacketsScheduled.With(labels),
 	}
 	c.InputBytesTotal.Add(0)
 	c.InputPacketsTotal.Add(0)
 	c.OutputBytesTotal.Add(0)
 	c.OutputPacketsTotal.Add(0)
 	c.DroppedPacketsTotal.Add(0)
+	c.SNCPacketsScheduled.Add(0)
 	return c
 }
 

@@ -16,9 +16,13 @@ package tc
 
 import (
 	"golang.org/x/net/ipv4"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
-type StrictPriorityScheduler struct{}
+type StrictPriorityScheduler struct {
+	SNCPacketsScheduled prometheus.Counter
+}
 
 // Schedule schedules packets based on a strict hierarchy, where a message from a
 // queue is only scheduled if all higher priority queues are empty.
@@ -30,6 +34,7 @@ func (s *StrictPriorityScheduler) Schedule(qs *Queues) ([]ipv4.Message, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.SNCPacketsScheduled.Add(float64(n))
 	read = read + n
 
 	n, err = qs.dequeue(ClsOhpEmpty, outputBatchCnt-read, qs.writeBuffer[read:])
