@@ -581,6 +581,8 @@ func (d *DataPlane) Run(ctx context.Context) error {
 					outputCounters := d.forwardingMetrics[egressID]
 					outputCounters.OutputPacketsTotal.Inc()
 					outputCounters.OutputBytesTotal.Add(float64(len(m.Buffers[0])))
+
+					time.Sleep(1 * time.Millisecond)
 				}
 				queues.ReturnBuffers(ms)
 			}
