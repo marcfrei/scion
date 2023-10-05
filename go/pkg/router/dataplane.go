@@ -29,6 +29,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/net/ipv4"
+
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/prometheus/client_golang/prometheus"
@@ -543,7 +545,19 @@ func (d *DataPlane) Run(ctx context.Context) error {
 				if result.OutConn == nil { // e.g. BFD case no message is forwarded
 					continue
 				}
-				d.enqueue(&result)
+
+				if result.Class == tc.ClsSNC {
+					var op ipv4.Message
+					op.Buffers[0] = result.OutPkt
+					op.Addr = nil
+					if result.OutAddr != nil {
+						op.Addr = result.OutAddr
+					}
+					addr := op.Addr.(*net.UDPAddr)
+					_, err = result.OutConn.WriteTo(op.Buffers[0], addr)
+				} else {
+					d.enqueue(&result)
+				}
 			}
 		}
 	}
