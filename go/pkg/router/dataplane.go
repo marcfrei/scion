@@ -587,7 +587,7 @@ func (d *DataPlane) Run(ctx context.Context) error {
 					outputCounters.OutputPacketsTotal.Inc()
 					outputCounters.OutputBytesTotal.Add(float64(len(m.Buffers[0])))
 
-					time.Sleep(1 * time.Millisecond)
+					time.Sleep(0)
 				}
 				queues.ReturnBuffers(ms)
 			}
