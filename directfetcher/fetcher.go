@@ -19,6 +19,10 @@ import (
 	"github.com/scionproto/scion/private/topology"
 )
 
+func toWildcard(ia addr.IA) addr.IA {
+	return addr.MustParseIA(fmt.Sprintf("%d-0", ia.ISD()))
+}
+
 type dstProvider struct{}
 
 func (d *dstProvider) Dst(context.Context, segfetcher.Request) (net.Addr, error) {
@@ -36,19 +40,17 @@ func New(topo *topology.Loader) *Fetcher {
 			if base := dst.Base(); base != addr.SvcCS {
 				panic("unexpected address type")
 			}
-			targets := []resolver.Address{}
-			for _, entry := range topo.ControlServiceAddresses() {
-				targets = append(targets, resolver.Address{Addr: entry.String()})
+			addrs := []resolver.Address{}
+			for _, csaddr := range topo.ControlServiceAddresses() {
+				addrs = append(addrs, resolver.Address{Addr: csaddr.String()})
 			}
-			return targets
+			return addrs
 		},
 	}
 	return &Fetcher{
 		topo: topo,
 		requester: &segfetcher.DefaultRequester{
-			RPC: &grpcfetcher.Requester{
-				Dialer: dialer,
-			},
+			RPC:         &grpcfetcher.Requester{Dialer: dialer},
 			DstProvider: &dstProvider{},
 		},
 	}
@@ -62,60 +64,59 @@ func (f *Fetcher) FetchPaths(ctx context.Context, dst addr.IA) ([]snet.Path, err
 		return nil, err
 	}
 
-	requests := f.createRequests(src, dst, srcCore, dstCore)
+	requests := f.createRequests(src, srcCore, dst, dstCore)
 	ups, cores, downs, err := f.fetchSegments(ctx, requests)
 	if err != nil {
 		return nil, err
 	}
 
-	paths := combinator.Combine(src, dst, ups, cores, downs, false /* findAllIdentical */)
-	return f.translatePaths(paths)
-}
-
-func toWildcard(ia addr.IA) addr.IA {
-	return addr.MustParseIA(fmt.Sprintf("%d-0", ia.ISD()))
+	cpaths := combinator.Combine(src, dst, ups, cores, downs, false /* findAllIdentical */)
+	return f.convertPaths(cpaths)
 }
 
 func (f *Fetcher) fetchASType(ctx context.Context, dst addr.IA) (bool, error) {
 	if dst.IsWildcard() {
-		return true, nil
+		panic("invalid argument: dst must not be a wildcard")
 	}
 
 	src := f.topo.IA()
-	singleISD := src.ISD() == dst.ISD()
-
-	var req segfetcher.Request
-	if singleISD {
-		req = segfetcher.Request{
-			Src: toWildcard(src), Dst: dst, SegType: seg.TypeDown}
-	} else {
-		req = segfetcher.Request{
-			Src: toWildcard(src), Dst: dst, SegType: seg.TypeCore}
-	}
-
+	req := segfetcher.Request{
+		Src: toWildcard(src), Dst: dst, SegType: 0 /* unspecified */}
 	replies := f.requester.Request(ctx, segfetcher.Requests{req})
 	for reply := range replies {
-		if singleISD {
+		if src.ISD() == dst.ISD() {
 			if reply.Err != nil {
 				return false, reply.Err
 			}
 			if len(reply.Segments) > 0 {
-				return false, nil
+				if reply.Segments[0].Type == seg.TypeCore {
+					return true, nil
+				} else {
+					return false, nil
+				}
 			} else {
 				return true, nil
 			}
 		} else {
 			if reply.Err != nil {
 				return false, nil
+			}
+			if len(reply.Segments) > 0 {
+				if reply.Segments[0].Type == seg.TypeCore {
+					return true, nil
+				} else {
+					return false, nil
+				}
 			} else {
-				return true, nil
+				return false, nil
 			}
 		}
 	}
 	return false, serrors.New("failed to fetch AS type")
 }
 
-func (f *Fetcher) createRequests(src, dst addr.IA, srcCore, dstCore bool) segfetcher.Requests {
+func (f *Fetcher) createRequests(
+	src addr.IA, srcCore bool, dst addr.IA, dstCore bool) segfetcher.Requests {
 	switch {
 	case !srcCore && !dstCore:
 		return segfetcher.Requests{
@@ -140,7 +141,6 @@ func (f *Fetcher) createRequests(src, dst addr.IA, srcCore, dstCore bool) segfet
 
 func (f *Fetcher) fetchSegments(ctx context.Context, requests segfetcher.Requests) (
 	ups, cores, downs []*seg.PathSegment, err error) {
-
 	if len(requests) == 0 {
 		return nil, nil, nil, nil
 	}
@@ -151,7 +151,7 @@ func (f *Fetcher) fetchSegments(ctx context.Context, requests segfetcher.Request
 			return nil, nil, nil, reply.Err
 		}
 		for _, segMeta := range reply.Segments {
-			switch reply.Req.SegType {
+			switch segMeta.Type {
 			case seg.TypeUp:
 				ups = append(ups, segMeta.Segment)
 			case seg.TypeCore:
@@ -161,37 +161,30 @@ func (f *Fetcher) fetchSegments(ctx context.Context, requests segfetcher.Request
 			}
 		}
 	}
-
 	return ups, cores, downs, nil
 }
 
-func (f *Fetcher) translatePaths(cpaths []combinator.Path) ([]snet.Path, error) {
+func (f *Fetcher) convertPaths(cpaths []combinator.Path) ([]snet.Path, error) {
 	var paths []snet.Path
 	for _, cpath := range cpaths {
-		path, err := f.translatePath(cpath)
+		path, err := f.convertPath(cpath)
 		if err != nil {
 			return nil, err
 		}
 		paths = append(paths, path)
 	}
-	if len(paths) == 0 {
-		return nil, serrors.New("no paths after translation")
-	}
 	return paths, nil
 }
 
-func (f *Fetcher) translatePath(cpath combinator.Path) (snet.Path, error) {
+func (f *Fetcher) convertPath(cpath combinator.Path) (snet.Path, error) {
 	if len(cpath.Metadata.Interfaces) == 0 {
 		return nil, serrors.New("path has no interfaces")
 	}
-
 	firstIF := cpath.Metadata.Interfaces[0]
-
 	nextHop := f.topo.UnderlayNextHop(uint16(firstIF.ID))
 	if nextHop == nil {
-		return nil, serrors.New("unable to find next hop for first interface", "ifID", firstIF.ID)
+		return nil, serrors.New("unable to find next hop address", "ifID", firstIF.ID)
 	}
-
 	return path.Path{
 		Src:           cpath.Metadata.Interfaces[0].IA,
 		Dst:           cpath.Metadata.Interfaces[len(cpath.Metadata.Interfaces)-1].IA,
