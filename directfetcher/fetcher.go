@@ -10,17 +10,41 @@ import (
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/grpc"
 	"github.com/scionproto/scion/pkg/private/serrors"
-	seg "github.com/scionproto/scion/pkg/segment"
+	"github.com/scionproto/scion/pkg/scrypto/cppki"
+	"github.com/scionproto/scion/pkg/segment"
 	"github.com/scionproto/scion/pkg/snet"
 	"github.com/scionproto/scion/pkg/snet/path"
 	"github.com/scionproto/scion/private/path/combinator"
 	"github.com/scionproto/scion/private/segment/segfetcher"
-	grpcfetcher "github.com/scionproto/scion/private/segment/segfetcher/grpc"
+	sfgrpc "github.com/scionproto/scion/private/segment/segfetcher/grpc"
+	"github.com/scionproto/scion/private/segment/segverifier"
+	"github.com/scionproto/scion/private/segment/verifier"
 	"github.com/scionproto/scion/private/topology"
+	"github.com/scionproto/scion/private/trust"
+	tgrpc "github.com/scionproto/scion/private/trust/grpc"
 )
 
 func toWildcard(ia addr.IA) addr.IA {
 	return addr.MustParseIA(fmt.Sprintf("%d-0", ia.ISD()))
+}
+
+type segVerifier struct {
+	trust.Verifier
+}
+
+func (v segVerifier) WithServer(server net.Addr) verifier.Verifier {
+	v.BoundServer = server
+	return v
+}
+
+func (v segVerifier) WithIA(ia addr.IA) verifier.Verifier {
+	v.BoundIA = ia
+	return v
+}
+
+func (v segVerifier) WithValidity(validity cppki.Validity) verifier.Verifier {
+	v.BoundValidity = validity
+	return v
 }
 
 type dstProvider struct{}
@@ -31,10 +55,14 @@ func (d *dstProvider) Dst(context.Context, segfetcher.Request) (net.Addr, error)
 
 type Fetcher struct {
 	topo      *topology.Loader
+	verifier  *segVerifier
 	requester *segfetcher.DefaultRequester
 }
 
-func New(topo *topology.Loader) *Fetcher {
+// New creates a new directfetcher.Fetcher. If trustDB is provided, path segments
+// will be verified using the trust material in the database. If trustDB is nil,
+// verification is disabled.
+func New(topo *topology.Loader, trustDB trust.DB) *Fetcher {
 	dialer := &grpc.TCPDialer{
 		SvcResolver: func(dst addr.SVC) []resolver.Address {
 			if base := dst.Base(); base != addr.SvcCS {
@@ -47,10 +75,31 @@ func New(topo *topology.Loader) *Fetcher {
 			return addrs
 		},
 	}
+
+	var verifier *segVerifier
+	if trustDB != nil {
+		verifier = &segVerifier{
+			Verifier: trust.Verifier{
+				Engine: trust.FetchingProvider{
+					DB: trustDB,
+					Fetcher: tgrpc.Fetcher{
+						IA:     topo.IA(),
+						Dialer: dialer,
+					},
+					Recurser: trust.LocalOnlyRecurser{},
+					Router: trust.LocalRouter{
+						IA: topo.IA(),
+					},
+				},
+			},
+		}
+	}
+
 	return &Fetcher{
-		topo: topo,
+		topo:     topo,
+		verifier: verifier,
 		requester: &segfetcher.DefaultRequester{
-			RPC:         &grpcfetcher.Requester{Dialer: dialer},
+			RPC:         &sfgrpc.Requester{Dialer: dialer},
 			DstProvider: &dstProvider{},
 		},
 	}
@@ -89,7 +138,7 @@ func (f *Fetcher) fetchASType(ctx context.Context, dst addr.IA) (bool, error) {
 				return false, reply.Err
 			}
 			if len(reply.Segments) > 0 {
-				if reply.Segments[0].Type == seg.TypeCore {
+				if reply.Segments[0].Type == segment.TypeCore {
 					return true, nil
 				} else {
 					return false, nil
@@ -102,7 +151,7 @@ func (f *Fetcher) fetchASType(ctx context.Context, dst addr.IA) (bool, error) {
 				return false, nil
 			}
 			if len(reply.Segments) > 0 {
-				if reply.Segments[0].Type == seg.TypeCore {
+				if reply.Segments[0].Type == segment.TypeCore {
 					return true, nil
 				} else {
 					return false, nil
@@ -120,27 +169,27 @@ func (f *Fetcher) createRequests(
 	switch {
 	case !srcCore && !dstCore:
 		return segfetcher.Requests{
-			{Src: src, Dst: toWildcard(src), SegType: seg.TypeUp},
-			{Src: toWildcard(src), Dst: toWildcard(dst), SegType: seg.TypeCore},
-			{Src: toWildcard(dst), Dst: dst, SegType: seg.TypeDown},
+			{Src: src, Dst: toWildcard(src), SegType: segment.TypeUp},
+			{Src: toWildcard(src), Dst: toWildcard(dst), SegType: segment.TypeCore},
+			{Src: toWildcard(dst), Dst: dst, SegType: segment.TypeDown},
 		}
 	case !srcCore && dstCore:
 		return segfetcher.Requests{
-			{Src: src, Dst: toWildcard(src), SegType: seg.TypeUp},
-			{Src: toWildcard(src), Dst: dst, SegType: seg.TypeCore},
+			{Src: src, Dst: toWildcard(src), SegType: segment.TypeUp},
+			{Src: toWildcard(src), Dst: dst, SegType: segment.TypeCore},
 		}
 	case srcCore && !dstCore:
 		return segfetcher.Requests{
-			{Src: src, Dst: toWildcard(dst), SegType: seg.TypeCore},
-			{Src: toWildcard(dst), Dst: dst, SegType: seg.TypeDown},
+			{Src: src, Dst: toWildcard(dst), SegType: segment.TypeCore},
+			{Src: toWildcard(dst), Dst: dst, SegType: segment.TypeDown},
 		}
 	default:
-		return segfetcher.Requests{{Src: src, Dst: dst, SegType: seg.TypeCore}}
+		return segfetcher.Requests{{Src: src, Dst: dst, SegType: segment.TypeCore}}
 	}
 }
 
 func (f *Fetcher) fetchSegments(ctx context.Context, requests segfetcher.Requests) (
-	ups, cores, downs []*seg.PathSegment, err error) {
+	ups, cores, downs []*segment.PathSegment, err error) {
 	if len(requests) == 0 {
 		return nil, nil, nil, nil
 	}
@@ -151,13 +200,21 @@ func (f *Fetcher) fetchSegments(ctx context.Context, requests segfetcher.Request
 			return nil, nil, nil, reply.Err
 		}
 		for _, segMeta := range reply.Segments {
+			seg := segMeta.Segment
+
+			if f.verifier != nil {
+				if err := segverifier.VerifySegment(ctx, f.verifier, reply.Peer, seg); err != nil {
+					continue // Skip invalid segments
+				}
+			}
+
 			switch segMeta.Type {
-			case seg.TypeUp:
-				ups = append(ups, segMeta.Segment)
-			case seg.TypeCore:
-				cores = append(cores, segMeta.Segment)
-			case seg.TypeDown:
-				downs = append(downs, segMeta.Segment)
+			case segment.TypeUp:
+				ups = append(ups, seg)
+			case segment.TypeCore:
+				cores = append(cores, seg)
+			case segment.TypeDown:
+				downs = append(downs, seg)
 			}
 		}
 	}

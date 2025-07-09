@@ -2,23 +2,34 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
-	"os"
 	"time"
 
 	"github.com/scionproto/scion/directfetcher"
 	"github.com/scionproto/scion/pkg/addr"
+	"github.com/scionproto/scion/private/storage"
 	"github.com/scionproto/scion/private/topology"
+	"github.com/scionproto/scion/private/trust"
 )
 
 func main() {
-	if len(os.Args) != 3 {
-		log.Fatalf("Usage: %s <topology-file> <destination-IA>", os.Args[0])
-	}
+	var topologyFile string
+	var certsDir string
+	var dstIAStr string
 
-	topologyFile := os.Args[1]
-	dstIAStr := os.Args[2]
+	flag.StringVar(&topologyFile, "topo", "topology.json", "Path to topology file (required)")
+	flag.StringVar(&certsDir, "certs", "", "Path to certs directory (optional, enables verification)")
+	flag.StringVar(&dstIAStr, "dst", "", "Destination ISD-AS (required)")
+	flag.Parse()
+
+	if topologyFile == "" {
+		log.Fatalf("Path to topology file is required (use -topo flag)")
+	}
+	if dstIAStr == "" {
+		log.Fatalf("Destination ISD-AS is required (use -dst flag)")
+	}
 
 	topo, err := topology.NewLoader(topology.LoaderCfg{
 		File: topologyFile,
@@ -32,7 +43,21 @@ func main() {
 		log.Fatalf("Failed to parse destination ISD-AS '%s': %v", dstIAStr, err)
 	}
 
-	fetcher := directfetcher.New(topo)
+	var trustDB trust.DB
+	if certsDir != "" {
+		trustDB, err = storage.NewTrustStorage(storage.DBConfig{
+			Connection: "file::memory:",
+		})
+		if err != nil {
+			log.Fatalf("Failed to create trust DB: %v", err)
+		}
+		_, err = trust.LoadTRCs(context.Background(), certsDir, trustDB)
+		if err != nil {
+			log.Fatalf("Failed to load TRCs: %v", err)
+		}
+	}
+
+	fetcher := directfetcher.New(topo, trustDB)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 16*time.Second)
 	defer cancel()
