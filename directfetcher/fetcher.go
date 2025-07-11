@@ -7,7 +7,9 @@ import (
 
 	"google.golang.org/grpc/resolver"
 
+	kgrpc "github.com/scionproto/scion/daemon/drkey/grpc"
 	"github.com/scionproto/scion/pkg/addr"
+	"github.com/scionproto/scion/pkg/drkey"
 	"github.com/scionproto/scion/pkg/grpc"
 	"github.com/scionproto/scion/pkg/private/serrors"
 	"github.com/scionproto/scion/pkg/scrypto/cppki"
@@ -54,9 +56,10 @@ func (d *dstProvider) Dst(context.Context, segfetcher.Request) (net.Addr, error)
 }
 
 type Fetcher struct {
-	topo      *topology.Loader
-	verifier  *segVerifier
-	requester *segfetcher.DefaultRequester
+	topo         *topology.Loader
+	segVerifier  *segVerifier
+	segRequester *segfetcher.DefaultRequester
+	drkeyFetcher *kgrpc.Fetcher
 }
 
 // New creates a new directfetcher.Fetcher. If trustDB is provided, path segments
@@ -96,11 +99,14 @@ func New(topo *topology.Loader, trustDB trust.DB) *Fetcher {
 	}
 
 	return &Fetcher{
-		topo:     topo,
-		verifier: verifier,
-		requester: &segfetcher.DefaultRequester{
+		topo:        topo,
+		segVerifier: verifier,
+		segRequester: &segfetcher.DefaultRequester{
 			RPC:         &sfgrpc.Requester{Dialer: dialer},
 			DstProvider: &dstProvider{},
+		},
+		drkeyFetcher: &kgrpc.Fetcher{
+			Dialer: dialer,
 		},
 	}
 }
@@ -131,7 +137,7 @@ func (f *Fetcher) fetchASType(ctx context.Context, dst addr.IA) (bool, error) {
 	src := f.topo.IA()
 	req := segfetcher.Request{
 		Src: toWildcard(src), Dst: dst, SegType: 0 /* unspecified */}
-	replies := f.requester.Request(ctx, segfetcher.Requests{req})
+	replies := f.segRequester.Request(ctx, segfetcher.Requests{req})
 	for reply := range replies {
 		if src.ISD() == dst.ISD() {
 			if reply.Err != nil {
@@ -194,7 +200,7 @@ func (f *Fetcher) fetchSegments(ctx context.Context, requests segfetcher.Request
 		return nil, nil, nil, nil
 	}
 
-	replies := f.requester.Request(ctx, requests)
+	replies := f.segRequester.Request(ctx, requests)
 	for reply := range replies {
 		if reply.Err != nil {
 			return nil, nil, nil, reply.Err
@@ -202,8 +208,8 @@ func (f *Fetcher) fetchSegments(ctx context.Context, requests segfetcher.Request
 		for _, segMeta := range reply.Segments {
 			seg := segMeta.Segment
 
-			if f.verifier != nil {
-				if err := segverifier.VerifySegment(ctx, f.verifier, reply.Peer, seg); err != nil {
+			if f.segVerifier != nil {
+				if err := segverifier.VerifySegment(ctx, f.segVerifier, reply.Peer, seg); err != nil {
 					continue // Skip invalid segments
 				}
 			}
@@ -249,4 +255,16 @@ func (f *Fetcher) convertPath(cpath combinator.Path) (snet.Path, error) {
 		NextHop:       nextHop,
 		Meta:          cpath.Metadata,
 	}, nil
+}
+
+func (f *Fetcher) FetchASHostKey(ctx context.Context, meta drkey.ASHostMeta) (drkey.ASHostKey, error) {
+	return f.drkeyFetcher.ASHostKey(ctx, meta)
+}
+
+func (f *Fetcher) FetchHostASKey(ctx context.Context, meta drkey.HostASMeta) (drkey.HostASKey, error) {
+	return f.drkeyFetcher.HostASKey(ctx, meta)
+}
+
+func (f *Fetcher) FetchHostHostKey(ctx context.Context, meta drkey.HostHostMeta) (drkey.HostHostKey, error) {
+	return f.drkeyFetcher.HostHostKey(ctx, meta)
 }
