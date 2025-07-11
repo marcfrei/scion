@@ -46,7 +46,7 @@ func main() {
 	var trustDB trust.DB
 	if certsDir != "" {
 		trustDB, err = storage.NewTrustStorage(storage.DBConfig{
-			Connection: "file::memory:",
+			Connection: "file:trust.db?mode=memory&cache=shared",
 		})
 		if err != nil {
 			log.Fatalf("Failed to create trust DB: %v", err)
