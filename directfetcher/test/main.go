@@ -10,9 +10,12 @@ import (
 	"github.com/scionproto/scion/directfetcher"
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/private/storage"
+	"github.com/scionproto/scion/private/storage/trust/fspersister"
 	"github.com/scionproto/scion/private/topology"
 	"github.com/scionproto/scion/private/trust"
 )
+
+const persistTRCs = false
 
 func main() {
 	var topologyFile string
@@ -43,7 +46,7 @@ func main() {
 		log.Fatalf("Failed to parse destination ISD-AS '%s': %v", dstIAStr, err)
 	}
 
-	var trustDB trust.DB
+	var trustDB storage.TrustDB
 	if certsDir != "" {
 		trustDB, err = storage.NewTrustStorage(storage.DBConfig{
 			Connection: "file:trust.db?mode=memory&cache=shared",
@@ -51,6 +54,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to create trust DB: %v", err)
 		}
+
+		if persistTRCs {
+			trustDB = fspersister.WrapDB(trustDB, fspersister.Config{
+				TRCDir: certsDir,
+			})
+		}
+
 		_, err = trust.LoadTRCs(context.Background(), certsDir, trustDB)
 		if err != nil {
 			log.Fatalf("Failed to load TRCs: %v", err)
