@@ -18,7 +18,7 @@ import (
 	"github.com/scionproto/scion/pkg/snet/path"
 	"github.com/scionproto/scion/private/path/combinator"
 	"github.com/scionproto/scion/private/segment/segfetcher"
-	sfgrpc "github.com/scionproto/scion/private/segment/segfetcher/grpc"
+	sgrpc "github.com/scionproto/scion/private/segment/segfetcher/grpc"
 	"github.com/scionproto/scion/private/segment/segverifier"
 	"github.com/scionproto/scion/private/segment/verifier"
 	"github.com/scionproto/scion/private/topology"
@@ -102,7 +102,7 @@ func New(topo *topology.Loader, trustDB trust.DB) *Fetcher {
 		topo:        topo,
 		segVerifier: verifier,
 		segRequester: &segfetcher.DefaultRequester{
-			RPC:         &sfgrpc.Requester{Dialer: dialer},
+			RPC:         &sgrpc.Requester{Dialer: dialer},
 			DstProvider: &dstProvider{},
 		},
 		drkeyFetcher: &kgrpc.Fetcher{
