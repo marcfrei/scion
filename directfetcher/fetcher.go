@@ -114,12 +114,8 @@ func New(topo *topology.Loader, trustDB trust.DB) *Fetcher {
 func (f *Fetcher) FetchPaths(ctx context.Context, dst addr.IA) ([]snet.Path, error) {
 	src := f.topo.IA()
 	srcCore := f.topo.Core()
-	dstCore, err := f.fetchASType(ctx, dst)
-	if err != nil {
-		return nil, err
-	}
 
-	requests := f.createRequests(src, srcCore, dst, dstCore)
+	requests := f.createRequests(src, srcCore, dst)
 	ups, cores, downs, err := f.fetchSegments(ctx, requests)
 	if err != nil {
 		return nil, err
@@ -129,68 +125,23 @@ func (f *Fetcher) FetchPaths(ctx context.Context, dst addr.IA) ([]snet.Path, err
 	return f.convertPaths(cpaths)
 }
 
-func (f *Fetcher) fetchASType(ctx context.Context, dst addr.IA) (bool, error) {
-	if dst.IsWildcard() {
-		panic("invalid argument: dst must not be a wildcard")
-	}
-
-	src := f.topo.IA()
-	req := segfetcher.Request{
-		Src: toWildcard(src), Dst: dst, SegType: 0 /* unspecified */}
-	replies := f.segRequester.Request(ctx, segfetcher.Requests{req})
-	for reply := range replies {
-		if src.ISD() == dst.ISD() {
-			if reply.Err != nil {
-				return false, reply.Err
-			}
-			if len(reply.Segments) > 0 {
-				if reply.Segments[0].Type == segment.TypeCore {
-					return true, nil
-				} else {
-					return false, nil
-				}
-			} else {
-				return true, nil
-			}
-		} else {
-			if reply.Err != nil {
-				return false, nil
-			}
-			if len(reply.Segments) > 0 {
-				if reply.Segments[0].Type == segment.TypeCore {
-					return true, nil
-				} else {
-					return false, nil
-				}
-			} else {
-				return false, nil
-			}
-		}
-	}
-	return false, serrors.New("failed to fetch AS type")
-}
 
 func (f *Fetcher) createRequests(
-	src addr.IA, srcCore bool, dst addr.IA, dstCore bool) segfetcher.Requests {
-	switch {
-	case !srcCore && !dstCore:
+	src addr.IA, srcCore bool, dst addr.IA) segfetcher.Requests {
+	if srcCore {
 		return segfetcher.Requests{
-			{Src: src, Dst: toWildcard(src), SegType: segment.TypeUp},
-			{Src: toWildcard(src), Dst: toWildcard(dst), SegType: segment.TypeCore},
-			{Src: toWildcard(dst), Dst: dst, SegType: segment.TypeDown},
-		}
-	case !srcCore && dstCore:
-		return segfetcher.Requests{
-			{Src: src, Dst: toWildcard(src), SegType: segment.TypeUp},
-			{Src: toWildcard(src), Dst: dst, SegType: segment.TypeCore},
-		}
-	case srcCore && !dstCore:
-		return segfetcher.Requests{
+			{Src: src, Dst: dst, SegType: segment.TypeDown},
+			{Src: src, Dst: dst, SegType: segment.TypeCore},
 			{Src: src, Dst: toWildcard(dst), SegType: segment.TypeCore},
 			{Src: toWildcard(dst), Dst: dst, SegType: segment.TypeDown},
 		}
-	default:
-		return segfetcher.Requests{{Src: src, Dst: dst, SegType: segment.TypeCore}}
+	} else {
+		return segfetcher.Requests{
+			{Src: src, Dst: toWildcard(src), SegType: segment.TypeUp},
+			{Src: toWildcard(src), Dst: toWildcard(dst), SegType: segment.TypeCore},
+			{Src: toWildcard(src), Dst: dst, SegType: segment.TypeCore},
+			{Src: toWildcard(dst), Dst: dst, SegType: segment.TypeDown},
+		}
 	}
 }
 
